@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import func
 from typing import List
 import string
 import random
 from datetime import datetime
 
 from app.db.session import get_db
-from app.models.domain import User, Company
+from app.models.domain import User, Company, Execution
 from app.api.auth import get_current_user
 from app.schemas.tenant_admin import DeveloperCreate, DeveloperUpdate, DeveloperResponse, DeveloperCreatedResponse, SettingsUpdate
 from app.core.security import get_password_hash
@@ -97,13 +98,46 @@ async def get_dashboard(
     total_developers = len(developers)
     active_developers = len([d for d in developers if d.status == "ACTIVE"])
     
+    dev_ids = [d.id for d in developers] + [current_user.id]
+
+    # Dynamic Agent Runs Count for Tenant
+    runs_result = await db.execute(
+        select(func.count(Execution.id)).where(
+            (Execution.company_id == current_user.company_id) | (Execution.user_id.in_(dev_ids))
+        )
+    )
+    agent_runs_used = runs_result.scalar() or 0
+
+    # Dynamic Tokens Consumed for Tenant
+    tokens_result = await db.execute(
+        select(func.sum(Execution.token_usage)).where(
+            (Execution.company_id == current_user.company_id) | (Execution.user_id.in_(dev_ids))
+        )
+    )
+    tokens_consumed = tokens_result.scalar() or 0
+
+    # Dynamic Active Running Agents Count
+    active_runs_result = await db.execute(
+        select(func.count(Execution.id)).where(
+            ((Execution.company_id == current_user.company_id) | (Execution.user_id.in_(dev_ids)))
+            & (Execution.status.in_(["RUNNING", "PENDING"]))
+        )
+    )
+    active_agents = active_runs_result.scalar() or 0
+
     return {
         "metrics": {
             "total_developers": total_developers,
             "active_developers": active_developers,
             "license_limit": company.allocated_seats,
             "licenses_used": total_developers,
-            "active_agents": company.concurrent_limit,
+            "active_agents": active_agents,
+            "concurrent_limit": company.concurrent_limit,
+            "agent_runs_used": agent_runs_used,
+            "agent_runs_max": company.run_cap or 15000,
+            "tokens_consumed": tokens_consumed,
+            "monthly_cost": 199,
+            "next_billing_date": "Nov 1, 2026",
             "pending_invites": len([d for d in developers if d.status == "Invited"])
         },
         "company": {
@@ -112,9 +146,41 @@ async def get_dashboard(
             "domain": company.domain,
             "license_tier": company.license_tier,
             "status": company.status,
-            "allocated_seats": company.allocated_seats
+            "allocated_seats": company.allocated_seats,
+            "run_cap": company.run_cap or 15000
         }
     }
+
+@router.get("/recent-runs")
+async def get_tenant_recent_runs(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.role != "TENANT_ADMIN":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+        
+    dev_result = await db.execute(select(User.id).where(User.company_id == current_user.company_id))
+    dev_ids = [r[0] for r in dev_result.all()] + [current_user.id]
+    
+    runs_res = await db.execute(
+        select(Execution).where(
+            (Execution.company_id == current_user.company_id) | (Execution.user_id.in_(dev_ids))
+        ).order_by(Execution.created_at.desc()).limit(10)
+    )
+    runs = runs_res.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "ticketKey": r.jira_ticket_id,
+            "status": r.status,
+            "tokenUsage": r.token_usage,
+            "branch": r.branch_name,
+            "prUrl": r.pull_request_url,
+            "createdAt": r.created_at.strftime("%b %d, %H:%M") if r.created_at else None
+        }
+        for r in runs
+    ]
+
 
 @router.get("/developers", response_model=List[DeveloperResponse])
 async def list_developers(

@@ -190,7 +190,7 @@ export const TenantOverview: React.FC = () => {
             </div>
             <div className="mt-3 pt-2.5 border-t border-[#c7c4d8]/40 flex items-center justify-between text-[11px] font-mono">
               <span className="text-[#565e74]">Agent Rate Limit: 1,000 runs/hr</span>
-              <button onClick={() => setTenantAdminPage('upgrade-tier')} className="text-[#3525cd] hover:underline font-semibold cursor-pointer">
+              <button onClick={() => setTenantAdminPage('license-usage')} className="text-[#3525cd] hover:underline font-semibold cursor-pointer">
                 Upgrade Tier →
               </button>
             </div>

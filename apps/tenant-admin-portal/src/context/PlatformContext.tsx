@@ -664,7 +664,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
              slug: comp.name.toLowerCase().replace(/\s+/g, '-'),
              techStack: comp.tech_stack,
              gitProvider: comp.git_provider,
-             jiraSync: comp.jira_sync
+             jiraSync: comp.jira_sync,
+             agentRunsUsed: dashboard.metrics.agent_runs_used ?? 0,
+             agentRunsMax: dashboard.metrics.agent_runs_max ?? comp.run_cap ?? 15000,
+             tokensConsumed: dashboard.metrics.tokens_consumed ?? 0,
+             monthlyCost: dashboard.metrics.monthly_cost ?? 199,
+             nextBillingDate: dashboard.metrics.next_billing_date ?? 'Nov 1, 2026'
           };
           
           if (exists) {

@@ -126,7 +126,20 @@ async def fail_agent(
     import asyncio
     asyncio.create_task(transition_jira_issue(current_user, ticket_id, "To Do", comment))
     
-    return {"status": "Execution failed and Jira ticket updated."}
+    # Broadcast error event on Redis so UI immediately resets
+    try:
+        redis_client = aioredis.Redis.from_url(settings.REDIS_URL)
+        await redis_client.publish("ui_updates", json.dumps({
+            "ticket_id": ticket_id,
+            "event_type": "error",
+            "node": "operator_cancel" if "cancel" in req.error_message.lower() else "worker",
+            "payload": req.error_message
+        }))
+        await redis_client.close()
+    except Exception as re:
+        print(f"Redis publish error in fail_agent: {re}")
+
+    return {"status": "Execution failed and Jira ticket updated to To Do."}
 
 class ResumeRequest(BaseModel):
     decision: str
@@ -512,12 +525,25 @@ async def transition_jira_issue(current_user: User, issue_key: str, target_statu
         resp = await client.get(trans_url, headers=headers)
         if resp.status_code == 200:
             data = resp.json()
-            transitions = data.get("transitions", [])
-            # Find matching transition (simple substring match)
+            # Find matching transition (simple substring match with smart synonyms)
             transition_id = None
-            for t in transitions:
-                if target_status.lower() in t.get("name", "").lower() or target_status.lower() in t.get("to", {}).get("name", "").lower():
-                    transition_id = t.get("id")
+            target_lower = target_status.lower()
+            candidate_names = [target_lower]
+            if target_lower in ["to do", "todo", "open"]:
+                candidate_names.extend(["to do", "todo", "open", "stop progress", "backlog", "reopen"])
+            elif target_lower in ["in progress", "inprogress"]:
+                candidate_names.extend(["in progress", "inprogress", "start progress", "start work", "in development"])
+            elif target_lower in ["done", "completed", "pr ready"]:
+                candidate_names.extend(["done", "completed", "resolve issue", "close issue", "ready for review", "pr ready"])
+
+            for cand in candidate_names:
+                for t in transitions:
+                    name_str = t.get("name", "").lower()
+                    to_str = t.get("to", {}).get("name", "").lower()
+                    if cand in name_str or cand in to_str:
+                        transition_id = t.get("id")
+                        break
+                if transition_id:
                     break
                     
             if transition_id:

@@ -50,17 +50,53 @@ export const DeveloperWorkbench: React.FC = () => {
   const [githubRepos, setGithubRepos] = useState<any[]>([]);
   const [ticketRepoSelections, setTicketRepoSelections] = useState<Record<string, string>>({});
 
-  const handleRequestRevisions = async (ticketKey: string) => {
-    const feedback = window.prompt("Enter feedback or instructions for the agent to revise the PR:");
-    if (!feedback) return;
-    
-    const toastId = toast.loading("Resuming agent execution...");
-    try {
-      await resumeAgentExecution(ticketKey, feedback);
-      toast.success("Agent execution resumed successfully!", { id: toastId });
-    } catch (e) {
-      toast.error("Failed to resume agent execution.", { id: toastId });
-    }
+  // In-app Feedback Modal state (replaces browser prompt)
+  const [feedbackModal, setFeedbackModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    subtitle?: string;
+    promptText: string;
+    placeholder?: string;
+    ticketKey: string;
+    mode: 'plan_rejection' | 'pr_revision';
+  }>({
+    isOpen: false,
+    title: '',
+    subtitle: '',
+    promptText: '',
+    placeholder: '',
+    ticketKey: '',
+    mode: 'plan_rejection'
+  });
+  const [feedbackInput, setFeedbackInput] = useState('');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+
+  // In-app Confirmation Dialog state (replaces browser window.confirm)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    ticketKey?: string;
+    confirmLabel?: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {}
+  });
+
+  const handleRequestRevisions = (ticketKey: string) => {
+    setFeedbackInput('');
+    setFeedbackModal({
+      isOpen: true,
+      title: 'Request PR Revisions',
+      subtitle: `Ticket: ${ticketKey}`,
+      promptText: 'Enter feedback or instructions for the agent to revise the pull request code:',
+      placeholder: 'e.g., Fix form styling, add remember-me persistence, update validation...',
+      ticketKey,
+      mode: 'pr_revision'
+    });
   };
   const [repoBranchesCache, setRepoBranchesCache] = useState<Record<string, any[]>>({});
 
@@ -117,23 +153,31 @@ export const DeveloperWorkbench: React.FC = () => {
     const localTicket = tickets.find(local => local.key === t.key);
     const runForTicket = executionRuns.find(run => run.ticketKey === t.key);
 
-    let derivedStatus = t.fields?.status?.name || 'To Do';
-    let prUrl = localTicket?.prUrl;
+    let prUrl = runForTicket?.prUrl || localTicket?.prUrl || (t as any).prUrl || null;
     let prNumber = null;
-    let targetRepo = null;
+    let targetRepo = runForTicket?.targetRepo || (localTicket as any)?.targetRepo || (t as any).targetRepo || null;
 
-    if (runForTicket && runForTicket.prUrl) {
-      derivedStatus = runForTicket.status === 'Completed' || runForTicket.status === 'Merged' ? 'Completed' : 'PR Ready';
-      prUrl = runForTicket.prUrl;
-      targetRepo = runForTicket.targetRepo;
+    if (prUrl) {
       try {
         const parts = prUrl.split('/');
         prNumber = parts[parts.length - 1];
       } catch (e) {}
-    } else if (localTicket?.status === 'PR Ready' || localTicket?.status === 'Completed' || localTicket?.status === 'In Progress') {
-      derivedStatus = localTicket.status;
-    } else if (runForTicket && runForTicket.status === 'Completed') {
+    }
+
+    const isThisTicketRunning = isStreaming && agentRunningTicketKey === t.key;
+
+    let derivedStatus = t.fields?.status?.name || 'To Do';
+
+    if (isThisTicketRunning) {
+      derivedStatus = 'In Progress';
+    } else if (prUrl) {
+      derivedStatus = (runForTicket?.status === 'Merged') ? 'Completed' : 'PR Ready';
+    } else if (runForTicket && (runForTicket.status === 'Completed' || runForTicket.status === 'Merged')) {
       derivedStatus = 'Completed';
+    } else if (localTicket?.status) {
+      derivedStatus = localTicket.status;
+    } else if (t.fields?.status?.name) {
+      derivedStatus = t.fields.status.name;
     }
 
     return {
@@ -146,8 +190,8 @@ export const DeveloperWorkbench: React.FC = () => {
       issuetype: t.fields?.issuetype?.name || 'Task',
       parentKey: t.fields?.parent?.key || null,
       prUrl: prUrl,
-      prNumber: (localTicket as any)?.prNumber || prNumber,
-      targetRepo: (localTicket as any)?.targetRepo || targetRepo
+      prNumber: prNumber || (localTicket as any)?.prNumber,
+      targetRepo: targetRepo
     };
   });
 
@@ -171,12 +215,60 @@ export const DeveloperWorkbench: React.FC = () => {
     });
   };
 
+  const isRunningCurrentTicket = Boolean(
+    selectedTicket && isStreaming && agentRunningTicketKey === selectedTicket.key
+  );
+
+  const runForSelected = selectedTicket
+    ? executionRuns.find((run) => run.ticketKey === selectedTicket.key)
+    : null;
+
+  const isTicketCompleted = Boolean(
+    selectedTicket && !isRunningCurrentTicket && (
+      selectedTicket.status === 'PR Ready' ||
+      selectedTicket.status === 'Completed' ||
+      selectedTicket.status === 'Done' ||
+      selectedTicket.status === 'Merged' ||
+      Boolean(selectedTicket.prUrl) ||
+      Boolean((selectedTicket as any).prNumber) ||
+      Boolean(runForSelected && (runForSelected.status === 'Completed' || runForSelected.status === 'Merged' || Boolean(runForSelected.prUrl)))
+    )
+  );
+
+  const step1State: 'done' | 'active' | 'pending' = isRunningCurrentTicket
+    ? (agentStepIndex === 0 ? 'active' : 'done')
+    : 'done';
+
+  const step2State: 'done' | 'active' | 'pending' = isTicketCompleted
+    ? 'done'
+    : isRunningCurrentTicket
+    ? (agentStepIndex === 1 && (isStreaming || pendingApproval) ? 'active' : agentStepIndex > 1 ? 'done' : 'pending')
+    : 'pending';
+
+  const step3State: 'done' | 'active' | 'pending' = isTicketCompleted
+    ? 'done'
+    : isRunningCurrentTicket
+    ? (agentStepIndex === 2 && isStreaming ? 'active' : agentStepIndex > 2 ? 'done' : 'pending')
+    : 'pending';
+
+  const step4State: 'done' | 'active' | 'pending' = isTicketCompleted
+    ? 'done'
+    : isRunningCurrentTicket
+    ? (agentStepIndex === 3 ? 'active' : agentStepIndex >= 4 ? 'done' : 'pending')
+    : 'pending';
+
+  const step5State: 'done' | 'active' | 'pending' = isTicketCompleted
+    ? 'done'
+    : isRunningCurrentTicket
+    ? (agentStepIndex >= 4 && isStreaming ? 'active' : agentStepIndex >= 4 && !isStreaming ? 'done' : 'pending')
+    : 'pending';
+
   const pipelineSteps: { label: string; state: 'done' | 'active' | 'pending' }[] = [
-    { label: 'Ticket', state: agentStepIndex === 0 && isStreaming ? 'active' : 'done' },
-    { label: 'Plan', state: agentStepIndex === 1 && (isStreaming || pendingApproval) ? 'active' : agentStepIndex > 1 ? 'done' : 'pending' },
-    { label: 'Code', state: agentStepIndex === 2 && isStreaming ? 'active' : agentStepIndex > 2 ? 'done' : 'pending' },
-    { label: 'Commit', state: agentStepIndex >= 4 ? 'done' : 'pending' },
-    { label: 'PR', state: agentStepIndex >= 4 && !isStreaming ? 'done' : 'pending' },
+    { label: 'Ticket', state: step1State },
+    { label: 'Plan', state: step2State },
+    { label: 'Code', state: step3State },
+    { label: 'Commit', state: step4State },
+    { label: 'PR', state: step5State },
   ];
   const doneSteps = pipelineSteps.filter((st) => st.state === 'done').length;
 
@@ -303,7 +395,7 @@ export const DeveloperWorkbench: React.FC = () => {
                             <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse"></span>
                             <span>Running...</span>
                           </span>
-                        ) : (ticket.status === 'PR Ready' || ticket.status === 'Completed' || ticket.status === 'Done') ? (
+                        ) : (ticket.status === 'PR Ready' || ticket.status === 'Completed' || ticket.status === 'Done' || Boolean(ticket.prUrl)) ? (
                           <div className="flex flex-col gap-2 mt-1">
                             <span className="h-7 px-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-mono text-[11px] flex items-center justify-between gap-1.5 font-semibold">
                               <div className="flex items-center gap-1.5">
@@ -416,7 +508,7 @@ export const DeveloperWorkbench: React.FC = () => {
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-pulse"></span>
                               <span>Running...</span>
                             </span>
-                          ) : (child.status === 'PR Ready' || child.status === 'Completed' || child.status === 'Done') ? (
+                          ) : (child.status === 'PR Ready' || child.status === 'Completed' || child.status === 'Done' || Boolean(child.prUrl)) ? (
                             <div className="flex flex-col gap-2 mt-1">
                               <span className="h-7 px-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-mono text-[11px] flex items-center justify-between gap-1.5 font-semibold">
                                 <div className="flex items-center gap-1.5">
@@ -483,7 +575,7 @@ export const DeveloperWorkbench: React.FC = () => {
                                     toast.error("Please select a target repository before executing.");
                                     return;
                                   }
-                                  triggerAgentRun(child.key, branch, repo);
+                                  triggerAgentRun(child.key, branch, repo, child.description, child.title, (child as any).issuetype);
                                 }}
                                 className="h-9 lg:h-7 w-full rounded-lg bg-[#3525cd] hover:bg-[#4f46e5] text-white font-mono text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs active:scale-[0.98] cursor-pointer"
                               >
@@ -557,7 +649,7 @@ export const DeveloperWorkbench: React.FC = () => {
                   {selectedTicket.key}
                 </span>
                 <span className="text-base sm:text-lg font-bold text-[#0b1c30] tracking-tight break-words min-w-0">{selectedTicket.title}</span>
-                {isStreaming && (
+                {isRunningCurrentTicket && (
                   <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-900 border border-amber-200 text-xs font-mono font-semibold">
                     <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-ping"></span>
                     LangGraph Active
@@ -567,15 +659,27 @@ export const DeveloperWorkbench: React.FC = () => {
 
               {/* Action Toolbar */}
               <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                {isStreaming ? (
+                {isRunningCurrentTicket ? (
                   <button
-                    onClick={cancelAgentRun}
+                    onClick={() => {
+                      setConfirmDialog({
+                        isOpen: true,
+                        title: 'Cancel Agent Run?',
+                        message: `Are you sure you want to cancel the AI agent for ${selectedTicket.key}? The ticket will be reset back to 'To Do'.`,
+                        ticketKey: selectedTicket.key,
+                        confirmLabel: 'Cancel Run',
+                        onConfirm: () => {
+                          cancelAgentRun(selectedTicket.key);
+                          toast.success(`${selectedTicket.key} execution cancelled and reset to To Do.`);
+                        }
+                      });
+                    }}
                     className="h-8 px-3 rounded-lg bg-white border border-[#ba1a1a] text-[#ba1a1a] hover:bg-rose-50 text-xs font-mono transition-colors flex items-center gap-1 cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-[16px]">stop_circle</span>
                     <span>Cancel Run</span>
                   </button>
-                ) : selectedTicket.status === 'PR Ready' ? (
+                ) : (selectedTicket.status === 'PR Ready' || Boolean((selectedTicket as any).prUrl)) ? (
                   <a
                     href={(selectedTicket as any).prUrl || '#'}
                     target="_blank"
@@ -587,7 +691,18 @@ export const DeveloperWorkbench: React.FC = () => {
                   </a>
                 ) : (
                   <button
-                    onClick={() => triggerAgentRun(selectedTicket.key)}
+                    onClick={() => {
+                      const repo = ticketRepoSelections[selectedTicket.key] || (selectedTicket as any).targetRepo || (githubRepos[0]?.full_name);
+                      const branchInput = (document.getElementById(`branch-input-${selectedTicket.key}`) as HTMLInputElement)?.value || 'main';
+                      triggerAgentRun(
+                        selectedTicket.key,
+                        branchInput,
+                        repo,
+                        selectedTicket.description,
+                        selectedTicket.title,
+                        (selectedTicket as any).issuetype
+                      );
+                    }}
                     className="h-8 px-3 rounded-lg bg-white border border-[#3525cd] text-[#3525cd] hover:bg-[#eff4ff] text-xs font-mono transition-colors flex items-center gap-1 cursor-pointer font-semibold"
                   >
                     <span className="material-symbols-outlined text-[16px]">memory</span>
@@ -638,19 +753,21 @@ export const DeveloperWorkbench: React.FC = () => {
                 {/* Step 1 */}
                 <div
                   className={`p-2.5 rounded-lg border-2 text-xs relative overflow-hidden ${
-                    agentStepIndex === 0 && isStreaming
+                    step1State === 'active'
                       ? 'bg-amber-50 border-amber-300 shadow-sm'
-                      : agentStepIndex > 0
+                      : step1State === 'done'
                       ? 'bg-[#eff4ff] border-emerald-300'
                       : 'bg-white border-[#c7c4d8]/60'
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-mono font-bold text-[#565e74]">Step 1</span>
-                    {agentStepIndex === 0 && isStreaming ? (
+                    {step1State === 'active' ? (
                       <span className="w-2 h-2 rounded-full bg-amber-600 animate-ping"></span>
-                    ) : (
+                    ) : step1State === 'done' ? (
                       <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
+                    ) : (
+                      <span className="material-symbols-outlined text-[#777587] text-[16px]">radio_button_unchecked</span>
                     )}
                   </div>
                   <p className="font-semibold text-[#0b1c30] leading-snug">Get ticket details</p>
@@ -660,18 +777,18 @@ export const DeveloperWorkbench: React.FC = () => {
                 {/* Step 2 */}
                 <div
                   className={`p-2.5 rounded-lg border-2 text-xs relative overflow-hidden ${
-                    agentStepIndex === 1 && (isStreaming || pendingApproval)
+                    step2State === 'active'
                       ? 'bg-amber-50 border-amber-300 shadow-sm'
-                      : agentStepIndex > 1
+                      : step2State === 'done'
                       ? 'bg-[#eff4ff] border-emerald-300'
                       : 'bg-white border-[#c7c4d8]/60'
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] font-mono font-bold text-[#565e74]">Step 2</span>
-                    {agentStepIndex === 1 && (isStreaming || pendingApproval) ? (
+                    {step2State === 'active' ? (
                       <span className="w-2 h-2 rounded-full bg-amber-600 animate-ping"></span>
-                    ) : agentStepIndex > 1 ? (
+                    ) : step2State === 'done' ? (
                       <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
                     ) : (
                       <span className="material-symbols-outlined text-[#777587] text-[16px]">radio_button_unchecked</span>
@@ -684,75 +801,85 @@ export const DeveloperWorkbench: React.FC = () => {
                 {/* Step 3 */}
                 <div
                   className={`p-2.5 rounded-lg border-2 text-xs relative overflow-hidden ${
-                    agentStepIndex === 2 && isStreaming
+                    step3State === 'active'
                       ? 'bg-amber-50 border-amber-300 shadow-sm'
-                      : agentStepIndex > 2
+                      : step3State === 'done'
                       ? 'bg-[#eff4ff] border-emerald-300'
                       : 'bg-white border-[#c7c4d8]/60'
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-mono text-[#565e74] font-bold">
-                      {agentStepIndex === 2 ? 'Step 3' : 'Step 3'}
-                    </span>
-                    {agentStepIndex === 2 && isStreaming ? (
+                    <span className="text-[10px] font-mono text-[#565e74] font-bold">Step 3</span>
+                    {step3State === 'active' ? (
                       <span className="w-2 h-2 rounded-full bg-amber-600 animate-ping"></span>
-                    ) : agentStepIndex > 2 ? (
+                    ) : step3State === 'done' ? (
                       <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
                     ) : (
                       <span className="material-symbols-outlined text-[#777587] text-[16px]">radio_button_unchecked</span>
                     )}
                   </div>
                   <p className="font-bold text-[#0b1c30] leading-snug">Execute coding tasks</p>
-                  {agentStepIndex > 2 ? (
+                  {step3State === 'done' ? (
                     <div className="flex items-center gap-1 mt-1 text-[10px] font-mono text-emerald-700">
                       <span>Code generated & tested</span>
                     </div>
                   ) : (
                     <div className="flex items-center gap-1 mt-1 text-[10px] font-mono text-amber-800">
-                      {agentStepIndex === 2 && isStreaming && <span className="material-symbols-outlined animate-spin text-[12px]">refresh</span>}
-                      <span>{agentStepIndex === 2 ? 'LangGraph Agent Pulse' : 'Pending Agent'}</span>
+                      {step3State === 'active' && <span className="material-symbols-outlined animate-spin text-[12px]">refresh</span>}
+                      <span>{step3State === 'active' ? 'LangGraph Agent Pulse' : 'Pending Agent'}</span>
                     </div>
                   )}
                 </div>
 
                 {/* Step 4 */}
                 <div
-                  className={`p-2.5 rounded-lg border text-xs ${
-                    agentStepIndex >= 4
+                  className={`p-2.5 rounded-lg border-2 text-xs relative overflow-hidden ${
+                    step4State === 'active'
+                      ? 'bg-amber-50 border-amber-300 shadow-sm'
+                      : step4State === 'done'
                       ? 'bg-[#eff4ff] border-emerald-300'
                       : 'bg-white border-[#c7c4d8]/50 opacity-70'
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-mono text-[#777587]">Step 4</span>
-                    <span className="material-symbols-outlined text-[#777587] text-[16px]">
-                      {agentStepIndex >= 4 ? 'check_circle' : 'radio_button_unchecked'}
-                    </span>
+                    <span className="text-[10px] font-mono font-bold text-[#565e74]">Step 4</span>
+                    {step4State === 'active' ? (
+                      <span className="w-2 h-2 rounded-full bg-amber-600 animate-ping"></span>
+                    ) : step4State === 'done' ? (
+                      <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
+                    ) : (
+                      <span className="material-symbols-outlined text-[#777587] text-[16px]">radio_button_unchecked</span>
+                    )}
                   </div>
-                  <p className="font-medium text-[#565e74] leading-snug">Commit code & branch</p>
-                  <span className="text-[10px] font-mono text-[#777587]">
-                    {agentStepIndex >= 4 ? 'Git commit verified' : 'Pending Agent'}
+                  <p className="font-semibold text-[#0b1c30] leading-snug">Commit code & branch</p>
+                  <span className={`text-[10px] font-mono ${step4State === 'done' ? 'text-emerald-700' : 'text-[#777587]'}`}>
+                    {step4State === 'done' ? 'Git commit verified' : step4State === 'active' ? 'Committing code...' : 'Pending Agent'}
                   </span>
                 </div>
 
                 {/* Step 5 */}
                 <div
-                  className={`p-2.5 rounded-lg border text-xs ${
-                    agentStepIndex >= 4 && !isStreaming
+                  className={`p-2.5 rounded-lg border-2 text-xs relative overflow-hidden ${
+                    step5State === 'active'
+                      ? 'bg-amber-50 border-amber-300 shadow-sm'
+                      : step5State === 'done'
                       ? 'bg-[#eff4ff] border-emerald-300'
                       : 'bg-white border-[#c7c4d8]/50 opacity-70'
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[10px] font-mono text-[#777587]">Step 5</span>
-                    <span className="material-symbols-outlined text-[#777587] text-[16px]">
-                      {agentStepIndex >= 4 && !isStreaming ? 'check_circle' : 'radio_button_unchecked'}
-                    </span>
+                    <span className="text-[10px] font-mono font-bold text-[#565e74]">Step 5</span>
+                    {step5State === 'active' ? (
+                      <span className="w-2 h-2 rounded-full bg-amber-600 animate-ping"></span>
+                    ) : step5State === 'done' ? (
+                      <span className="material-symbols-outlined text-emerald-600 text-[16px]">check_circle</span>
+                    ) : (
+                      <span className="material-symbols-outlined text-[#777587] text-[16px]">radio_button_unchecked</span>
+                    )}
                   </div>
-                  <p className="font-medium text-[#565e74] leading-snug">Create PR & Jira sync</p>
-                  <span className="text-[10px] font-mono text-[#777587]">
-                    {agentStepIndex >= 4 && !isStreaming ? 'PR Open & Synced' : 'Pending Agent'}
+                  <p className="font-semibold text-[#0b1c30] leading-snug">Create PR & Jira sync</p>
+                  <span className={`text-[10px] font-mono ${step5State === 'done' ? 'text-emerald-700' : 'text-[#777587]'}`}>
+                    {step5State === 'done' ? 'PR Open & Synced' : step5State === 'active' ? 'Creating PR...' : 'Pending Agent'}
                   </span>
                 </div>
               </div>
@@ -801,20 +928,48 @@ export const DeveloperWorkbench: React.FC = () => {
                 <div className="flex flex-wrap gap-2">
                   <button 
                     onClick={() => resumeAgentRun('approved')} 
-                    className="px-4 py-1.5 bg-indigo-600 text-white rounded text-xs font-bold hover:bg-indigo-700 transition-colors flex items-center gap-1 shadow-sm"
+                    className="px-4 py-1.5 bg-indigo-600 text-white rounded text-xs font-bold hover:bg-indigo-700 transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-[14px]">check</span>
                     Approve (Y)
                   </button>
                   <button 
                     onClick={() => {
-                       const feedback = prompt("Please provide feedback on why you're rejecting this plan:");
-                       if (feedback !== null) resumeAgentRun('rejected', feedback);
+                      setFeedbackInput('');
+                      setFeedbackModal({
+                        isOpen: true,
+                        title: 'Reject Plan & Provide Feedback',
+                        subtitle: `Ticket: ${selectedTicket.key}`,
+                        promptText: 'Explain what needs to change or provide detailed requirements so the LangGraph agent can regenerate an accurate plan:',
+                        placeholder: 'e.g., Create Login page with email, password, and remember me checkbox fields in the frontend...',
+                        ticketKey: selectedTicket.key,
+                        mode: 'plan_rejection'
+                      });
                     }} 
-                    className="px-4 py-1.5 bg-white border border-indigo-300 text-indigo-700 rounded text-xs font-bold hover:bg-indigo-100 transition-colors flex items-center gap-1 shadow-sm"
+                    className="px-4 py-1.5 bg-white border border-indigo-300 text-indigo-700 rounded text-xs font-bold hover:bg-indigo-100 transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-[14px]">close</span>
+                    <span className="material-symbols-outlined text-[14px]">edit_note</span>
                     Reject & Provide Feedback (F)
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setConfirmDialog({
+                        isOpen: true,
+                        title: 'Stop Agent & Move to To Do?',
+                        message: `Are you sure you want to stop the autonomous agent for ${selectedTicket.key}? This will safely terminate execution, discard the proposed plan, and return the ticket back to 'To Do' on your Jira board.`,
+                        ticketKey: selectedTicket.key,
+                        confirmLabel: 'Yes, Stop & Move to To Do',
+                        onConfirm: () => {
+                          cancelAgentRun(selectedTicket.key);
+                          toast.success(`${selectedTicket.key} execution stopped and reset to To Do.`);
+                        }
+                      });
+                    }} 
+                    className="px-3 py-1.5 bg-white border border-rose-300 text-rose-700 rounded text-xs font-bold hover:bg-rose-50 transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
+                    title="Stop execution and return Jira ticket to To Do"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">cancel</span>
+                    Cancel & Move to To Do
                   </button>
                 </div>
               </div>
@@ -878,7 +1033,7 @@ export const DeveloperWorkbench: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-3 shrink-0">
-                  {isStreaming ? (
+                  {isRunningCurrentTicket ? (
                     <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                       <span className="hidden sm:inline">STREAMING REASONING</span>
@@ -888,6 +1043,29 @@ export const DeveloperWorkbench: React.FC = () => {
                     <span className="text-[11px] font-mono text-slate-400">
                       <span className="hidden sm:inline">SESSION </span>IDLE
                     </span>
+                  )}
+                  {isRunningCurrentTicket && (
+                    <button
+                      onClick={() => {
+                        const target = agentRunningTicketKey || selectedTicket?.key;
+                        setConfirmDialog({
+                          isOpen: true,
+                          title: 'Stop Active Agent Run?',
+                          message: `Are you sure you want to stop the live execution for ${target}? The running process will be cancelled and the ticket will be reset back to 'To Do'.`,
+                          ticketKey: target,
+                          confirmLabel: 'Stop Execution',
+                          onConfirm: () => {
+                            cancelAgentRun(target);
+                            toast.success(`${target} execution stopped and reset to To Do.`);
+                          }
+                        });
+                      }}
+                      className="h-6 px-2 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-[11px] font-mono flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Stop agent run and return Jira ticket to To Do"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">stop</span>
+                      <span className="hidden sm:inline">Stop & Reset</span>
+                    </button>
                   )}
                   <button
                     onClick={handleCopyLogs}
@@ -941,7 +1119,18 @@ export const DeveloperWorkbench: React.FC = () => {
                   </div>
                 ))}
 
-                {isStreaming && (
+                {agentLogs.length === 0 && isTicketCompleted && (
+                  <div className="space-y-1">
+                    <div className="flex items-start gap-x-2 text-slate-400">
+                      <span className="text-emerald-400 font-semibold">[COMPLETED]</span>
+                      <span className="text-slate-300">
+                        Agent execution completed successfully. Pull Request: {selectedTicket?.prUrl || 'PR Created'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {isRunningCurrentTicket && (
                   <div className="text-amber-400 font-mono text-xs flex items-center gap-1.5 pt-1">
                     <span className="material-symbols-outlined text-[14px] animate-spin">refresh</span>
                     <span>LangGraph agent executing graph loop...</span>
@@ -973,6 +1162,159 @@ export const DeveloperWorkbench: React.FC = () => {
           )}
         </section>
       </main>
+
+      {/* Custom In-App Feedback Modal (Replaces browser prompt) */}
+      {feedbackModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b1c30]/70 backdrop-blur-[4px] animate-in fade-in duration-150">
+          <div className="w-full max-w-lg bg-white rounded-xl border border-[#c7c4d8] shadow-2xl overflow-hidden flex flex-col">
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 border-b border-[#e2e8f0] flex items-center justify-between bg-indigo-50/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                  <span className="material-symbols-outlined text-[18px]">rate_review</span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#0b1c30]">{feedbackModal.title}</h3>
+                  {feedbackModal.subtitle && (
+                    <span className="text-[11px] font-mono text-indigo-700 font-semibold">{feedbackModal.subtitle}</span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setFeedbackModal(prev => ({ ...prev, isOpen: false }))}
+                className="w-7 h-7 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!feedbackInput.trim()) {
+                  toast.error("Please enter your feedback before submitting.");
+                  return;
+                }
+                setFeedbackSubmitting(true);
+                try {
+                  if (feedbackModal.mode === 'plan_rejection') {
+                    await resumeAgentRun('rejected', feedbackInput.trim());
+                    toast.success("Feedback sent! LangGraph agent is updating the plan.");
+                  } else {
+                    const toastId = toast.loading("Submitting revision instructions...");
+                    await resumeAgentExecution(feedbackModal.ticketKey, feedbackInput.trim());
+                    toast.success("Agent execution resumed successfully!", { id: toastId });
+                  }
+                  setFeedbackModal(prev => ({ ...prev, isOpen: false }));
+                  setFeedbackInput('');
+                } catch (err) {
+                  toast.error("Failed to submit feedback.");
+                  console.error(err);
+                } finally {
+                  setFeedbackSubmitting(false);
+                }
+              }}
+              className="p-5 flex flex-col gap-3"
+            >
+              <label className="text-xs text-[#565e74] leading-relaxed">
+                {feedbackModal.promptText}
+              </label>
+
+              <textarea
+                value={feedbackInput}
+                onChange={(e) => setFeedbackInput(e.target.value)}
+                placeholder={feedbackModal.placeholder}
+                rows={4}
+                autoFocus
+                className="w-full p-3 border border-slate-300 rounded-lg text-xs font-mono text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600 transition-all resize-y"
+              />
+
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-[11px] text-slate-400 font-mono">
+                  {feedbackInput.length} characters
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFeedbackModal(prev => ({ ...prev, isOpen: false }))}
+                    className="px-3.5 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={feedbackSubmitting || !feedbackInput.trim()}
+                    className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                  >
+                    {feedbackSubmitting ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        <span>Submitting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-[14px]">send</span>
+                        <span>Submit Feedback</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Custom In-App Confirmation Modal (Replaces browser window.confirm) */}
+      {confirmDialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b1c30]/70 backdrop-blur-[4px] animate-in fade-in duration-150">
+          <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col p-6 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start gap-3.5 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[22px]">warning</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <h3 className="text-base font-bold text-slate-900 leading-tight">
+                    {confirmDialog.title}
+                  </h3>
+                  {confirmDialog.ticketKey && (
+                    <span className="px-2 py-0.5 text-[11px] font-mono font-bold rounded bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+                      {confirmDialog.ticketKey}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  {confirmDialog.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100 mt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                Keep Running
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const action = confirmDialog.onConfirm;
+                  setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+                  action();
+                }}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[15px]">stop_circle</span>
+                <span>{confirmDialog.confirmLabel || 'Confirm'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

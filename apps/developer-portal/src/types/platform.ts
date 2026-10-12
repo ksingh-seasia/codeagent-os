@@ -76,7 +76,7 @@ export interface JiraTicket {
   title: string;
   description: string;
   priority: 'Critical' | 'High' | 'Medium' | 'Low';
-  status: 'Open' | 'In Progress' | 'PR Ready' | 'Completed';
+  status: 'Open' | 'In Progress' | 'PR Ready' | 'Completed' | 'To Do';
   points: number;
   estimatedHours: string;
   targetRepo: string;
@@ -129,7 +129,7 @@ export interface ExecutionRun {
   phase: string;
   duration: string;
   stepsCount: number;
-  status: 'Completed' | 'In Progress' | 'Needs Review' | 'Failed';
+  status: 'Completed' | 'In Progress' | 'Needs Review' | 'Failed' | 'Merged';
   addedLines: number;
   deletedLines: number;
   tokenUsage: string;

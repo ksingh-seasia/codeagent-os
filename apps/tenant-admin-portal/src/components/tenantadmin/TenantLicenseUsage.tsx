@@ -6,23 +6,59 @@ import { TenantBillingInvoicesView } from './TenantBillingInvoicesView';
 export const TenantLicenseUsage: React.FC = () => {
   const { currentCompany, currentTenantDevelopers } = usePlatform();
   const [activeTab, setActiveTab] = useState<'overview' | 'upgrade' | 'billing'>('overview');
+  const [recentRuns, setRecentRuns] = useState<any[]>([]);
   
   const onNavigateToUpgrade = () => setActiveTab('upgrade');
   const onNavigateToInvoices = () => setActiveTab('billing');
   
   const activeSeats = currentTenantDevelopers.length;
   const totalSeats = currentCompany.totalLicenses;
-  const agentRunsUsed = 8420;
-  const agentRunsMax = 15000;
-  const monthlyCost = 199;
-  const nextBillingDate = 'Apr 1, 2025';
+  const agentRunsUsed = currentCompany.agentRunsUsed ?? 0;
+  const agentRunsMax = currentCompany.agentRunsMax ?? 15000;
+  const monthlyCost = currentCompany.monthlyCost ?? 199;
+  const nextBillingDate = currentCompany.nextBillingDate ?? 'Nov 1, 2026';
+  const tokensConsumed = currentCompany.tokensConsumed ?? 0;
 
-  const [estimatedTokens, setEstimatedTokens] = useState<number>(10000000);
-  const avgTokensPerRun = 100000;
-  const estimatedRuns = Math.floor(estimatedTokens / avgTokensPerRun);
+  const runsUsedPercent = agentRunsMax > 0 ? Math.round((agentRunsUsed / agentRunsMax) * 100) : 0;
+  const avgTokensPerRun = agentRunsUsed > 0 ? Math.round(tokensConsumed / agentRunsUsed) : 10000;
+
+  const [estimatedTokens, setEstimatedTokens] = useState<number>(tokensConsumed || 50000);
+  const estimatedRuns = avgTokensPerRun > 0 ? Math.floor(estimatedTokens / avgTokensPerRun) : 0;
+
+  React.useEffect(() => {
+    const fetchRecentRuns = async () => {
+      try {
+        const token = localStorage.getItem('access_token');
+        if (!token) return;
+        const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'}/tenant/recent-runs`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setRecentRuns(data);
+        }
+      } catch (e) {
+        // fallback
+      }
+    };
+    fetchRecentRuns();
+  }, []);
 
   const recentActivities = [
-    ...currentTenantDevelopers.slice(0, 3).map(dev => ({
+    ...recentRuns.slice(0, 3).map((run) => ({
+      id: `run_${run.id}`,
+      icon: 'smart_toy',
+      color: run.status === 'COMPLETED' ? '#005338' : '#3525cd',
+      bg: run.status === 'COMPLETED' ? '#ecfdf5' : '#eff4ff',
+      title: (
+        <span className="text-[13px] text-[#0b1c30]">
+          <strong className="font-semibold">Agent Run #{run.id}</strong> on {run.ticketKey} ({run.status})
+        </span>
+      ),
+      subtitle: `${run.tokenUsage || 0} tokens consumed • Branch: ${run.branch || 'main'}`,
+      time: run.createdAt || 'Recent',
+    })),
+    ...currentTenantDevelopers.slice(0, 2).map(dev => ({
       id: dev.id,
       icon: dev.status === 'Active' ? 'person_add' : 'outgoing_mail',
       color: dev.status === 'Active' ? '#3525cd' : '#565e74',
@@ -35,15 +71,6 @@ export const TenantLicenseUsage: React.FC = () => {
       subtitle: dev.status === 'Active' ? `Role: ${dev.role}` : 'Invitation pending acceptance',
       time: dev.addedDate,
     })),
-    {
-      id: 'billing_1',
-      icon: 'receipt_long',
-      color: '#005338',
-      bg: '#eff4ff',
-      title: <span className="text-[13px] text-[#0b1c30]">Monthly renewal confirmed via Stripe</span>,
-      subtitle: `Invoice #in_9482910 ($${monthlyCost}.00)`,
-      time: 'March 1',
-    }
   ];
 
   if (activeTab === 'upgrade') {
@@ -149,17 +176,17 @@ export const TenantLicenseUsage: React.FC = () => {
                 {agentRunsUsed.toLocaleString()} / {agentRunsMax.toLocaleString()}
               </span>
               <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[#e5eeff] text-[#565e74] font-medium">
-                56% used
+                {runsUsedPercent}% used
               </span>
             </div>
           </div>
           <div className="space-y-2">
             <div className="w-full h-2 bg-[#eff4ff] rounded-full overflow-hidden border border-[#c7c4d8]/40">
-              <div className="h-full bg-[#4f46e5] rounded-full" style={{ width: '56.1%' }}></div>
+              <div className="h-full bg-[#4f46e5] rounded-full" style={{ width: `${Math.min(100, runsUsedPercent)}%` }}></div>
             </div>
             <p className="text-[11px] text-[#565e74] flex items-center gap-1">
-              <span className="material-symbols-outlined text-[14px]">schedule</span>
-              <span>Resets in 14 days (Apr 1)</span>
+              <span className="material-symbols-outlined text-[14px]">memory</span>
+              <span>{tokensConsumed.toLocaleString()} tokens consumed across team</span>
             </p>
           </div>
         </div>

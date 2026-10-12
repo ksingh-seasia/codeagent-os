@@ -44,6 +44,11 @@ export interface Company {
   techStack?: string;
   gitProvider?: string;
   jiraSync?: boolean;
+  agentRunsUsed?: number;
+  agentRunsMax?: number;
+  tokensConsumed?: number;
+  monthlyCost?: number;
+  nextBillingDate?: string;
 }
 
 export interface DeveloperMember {

@@ -46,7 +46,8 @@ export const DeveloperDiffViewer: React.FC = () => {
     status,
     targetRepo,
     prNumber: cleanPrNumber,
-    branch: mockTicket?.branch || activeRun?.branch || 'main'
+    branch: mockTicket?.branch || activeRun?.branch || 'main',
+    assignedTo: (mockTicket as any)?.assignedTo || activeRun?.assignedTo || 'Autonomous Agent'
   };
 
   const [activeTab, setActiveTab] = useState<'diff' | 'tests' | 'review' | 'ast'>('diff');

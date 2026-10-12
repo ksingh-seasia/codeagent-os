@@ -797,7 +797,7 @@ interface PlatformContextType {
   triggerAgentRun: (ticketKey: string, baseBranch?: string, targetRepo?: string, req?: string, title?: string, type?: string) => void;
   resumeAgentRun: (decision: string, feedback?: string) => void;
   resumeAgentExecution: (ticketKey: string, feedback: string) => Promise<void>;
-  cancelAgentRun: () => void;
+  cancelAgentRun: (ticketKey?: string) => Promise<void> | void;
   approvePullRequest: (ticketKey: string) => void;
   resetDemoState: () => void;
 
@@ -1019,12 +1019,28 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               
               if (data.event_type === 'error') {
                 setIsStreaming(false);
+                setPendingApproval(null);
+                const failedTicket = data.ticket_id || prevKey;
+                setAgentRunningTicketKey(null);
+                if (failedTicket) {
+                  updateTicketStatus(failedTicket, 'To Do');
+                  fetch(`${baseUrl}/developer/executions/${failedTicket}/fail`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+                    },
+                    body: JSON.stringify({
+                      error_message: data.payload || 'Agent execution failed.'
+                    })
+                  }).catch(console.error);
+                }
                 setAgentLogs(prev => [...prev, {
                     id: `log-${Date.now()}-error`,
                     timestamp: new Date().toLocaleTimeString(),
                     level: 'ERROR',
                     tag: 'Worker',
-                    message: `Agent execution failed: ${data.payload}`
+                    message: `Agent execution failed: ${data.payload}. Ticket status reset to To Do.`
                 }]);
               }
 
@@ -1321,7 +1337,16 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const ticket = tickets.find(t => t.key === ticketKey);
     const title = overrideTitle || (ticket ? ticket.title : 'Task execution');
-    const requirement = overrideRequirement || (ticket ? ticket.description : 'Please complete the task.');
+    const rawDesc = (overrideRequirement || (ticket ? ticket.description : '') || '').trim();
+    const isPlaceholderDesc = 
+      !rawDesc || 
+      rawDesc.toLowerCase() === 'no description provided.' || 
+      rawDesc.toLowerCase() === 'please complete the task.';
+
+    // Compose rich requirement: always include title, and append description if non-empty
+    const requirement = !isPlaceholderDesc
+      ? `Task: ${title}\n\nDescription:\n${rawDesc}`
+      : `Task: ${title}`;
 
     const issueType = overrideIssueType || ((ticket as any)?.issuetype?.toLowerCase()) || 'task';
     let prefix = 'feature';
@@ -1412,6 +1437,23 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const resumeAgentExecution = async (ticketKey: string, feedback: string) => {
+    setSelectedTicketKey(ticketKey);
+    setAgentRunningTicketKey(ticketKey);
+    setAgentStepIndex(0);
+    setIsStreaming(true);
+    setAgentProgressPercent(20);
+    setAgentLogs(prev => [
+      ...prev,
+      {
+        id: `log-${Date.now()}-revision`,
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'INFO',
+        tag: 'AgentRunner',
+        message: `Revision requested for ${ticketKey}: "${feedback}". Initializing autonomous runner for revisions...`
+      }
+    ]);
+    updateTicketStatus(ticketKey, 'In Progress');
+
     try {
       await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'}/developer/executions/${ticketKey}/resume`, {
         method: 'POST',
@@ -1426,12 +1468,26 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
     } catch (e) {
       console.error(e);
+      setIsStreaming(false);
+      setAgentLogs(prev => [
+        ...prev,
+        {
+          id: `log-${Date.now()}-error`,
+          timestamp: new Date().toLocaleTimeString(),
+          level: 'ERROR',
+          tag: 'AgentRunner',
+          message: `Failed to resume agent execution: ${(e as Error)?.message || 'Network error'}`
+        }
+      ]);
       throw e;
     }
   };
 
-  const cancelAgentRun = () => {
+  const cancelAgentRun = async (ticketKey?: string) => {
+    const targetKey = ticketKey || agentRunningTicketKey;
     setIsStreaming(false);
+    setPendingApproval(null);
+    setAgentRunningTicketKey(null);
     setAgentLogs(prev => [
       ...prev,
       {
@@ -1439,9 +1495,28 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         timestamp: new Date().toLocaleTimeString(),
         level: 'INFO',
         tag: 'AgentRunner',
-        message: 'Agent execution manually stopped by operator.'
+        message: `Agent execution stopped by operator${targetKey ? ` for ${targetKey}` : ''}. Ticket status reset to To Do.`
       }
     ]);
+
+    if (targetKey) {
+      updateTicketStatus(targetKey, 'To Do');
+      const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+      try {
+        await fetch(`${baseUrl}/developer/executions/${targetKey}/fail`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+          },
+          body: JSON.stringify({
+            error_message: 'Agent execution manually stopped / cancelled by developer.'
+          })
+        });
+      } catch (e) {
+        console.error('Failed to notify backend of cancelled execution:', e);
+      }
+    }
   };
 
   const approvePullRequest = async (ticketKey: string) => {
