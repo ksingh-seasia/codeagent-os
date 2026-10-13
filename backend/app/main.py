@@ -17,6 +17,11 @@ async def lifespan(app: FastAPI):
     # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        from sqlalchemy import text
+        try:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS anthropic_api_key VARCHAR(512);"))
+        except Exception as e:
+            print(f"Column migration notice: {e}")
     yield
 
 app = FastAPI(

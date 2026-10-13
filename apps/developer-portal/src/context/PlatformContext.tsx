@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import {
   PortalType,
   SuperAdminPage,
@@ -800,6 +800,8 @@ interface PlatformContextType {
   cancelAgentRun: (ticketKey?: string) => Promise<void> | void;
   approvePullRequest: (ticketKey: string) => void;
   resetDemoState: () => void;
+  anthropicStatus: { connected: boolean; masked_key?: string | null } | null;
+  fetchAnthropicStatus: () => Promise<void>;
 
   // Global settings
   minPasswordLength: number;
@@ -938,19 +940,90 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [agentProgressPercent, setAgentProgressPercent] = useState<number>(60);
   const [activeTicketsCount, setActiveTicketsCount] = useState<number>(0);
   const [pendingApproval, setPendingApproval] = useState<any | null>(null);
-  const [agentLogs, setAgentLogs] = useState<TerminalLog[]>([]);
+
+  // Per-ticket terminal logs to prevent cross-ticket log pollution
+  const [ticketLogsMap, setTicketLogsMap] = useState<Record<string, TerminalLog[]>>(() => {
+    try {
+      const saved = sessionStorage.getItem('cag_ticket_logs');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('cag_ticket_logs', JSON.stringify(ticketLogsMap));
+    } catch {}
+  }, [ticketLogsMap]);
+
+  const agentLogs = useMemo(() => {
+    return ticketLogsMap[selectedTicketKey] || [];
+  }, [ticketLogsMap, selectedTicketKey]);
+
+  const appendTicketLog = (ticketId: string, log: TerminalLog) => {
+    if (!ticketId) return;
+    setTicketLogsMap(prev => {
+      const existing = prev[ticketId] || [];
+      const isDup = existing.slice(-2).some(l => l.message === log.message && l.level === log.level);
+      if (isDup) return prev;
+      return {
+        ...prev,
+        [ticketId]: [...existing, log]
+      };
+    });
+  };
+
+  const setAgentLogs = (updater: TerminalLog[] | ((prev: TerminalLog[]) => TerminalLog[])) => {
+    setTicketLogsMap(prev => {
+      const current = prev[selectedTicketKey] || [];
+      const updated = typeof updater === 'function' ? updater(current) : updater;
+      return {
+        ...prev,
+        [selectedTicketKey]: updated
+      };
+    });
+  };
+
+  // AI Provider (Anthropic BYOK) Status
+  const [anthropicStatus, setAnthropicStatus] = useState<{ connected: boolean; masked_key?: string | null } | null>(null);
+
+  const fetchAnthropicStatus = async () => {
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1'}/developer/integrations/anthropic/status`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('access_token')}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAnthropicStatus(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch Anthropic status', e);
+    }
+  };
+
+  useEffect(() => {
+    fetchAnthropicStatus();
+  }, []);
 
   // Sync to LocalStorage on updates
   useEffect(() => {
-    let ws: WebSocket;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: any = null;
+    let isCancelled = false;
+
     const connectWs = () => {
+      if (isCancelled) return;
       const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
       const wsUrl = baseUrl.replace('http', 'ws') + '/developer/executions/ws';
       ws = new WebSocket(wsUrl);
+
       ws.onmessage = (event) => {
+        if (isCancelled) return;
         try {
           const data = JSON.parse(event.data);
           setAgentRunningTicketKey(prevKey => {
+            const targetTicket = data.ticket_id || prevKey;
             if (prevKey && data.ticket_id === prevKey) {
               // Only process top-level nodes for Step UI progression
               const validNodes = ['analyze', 'human_plan_gate', 'generate', 'generate_tests', 'run_tests', 'review', '__end__'];
@@ -979,12 +1052,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 setIsStreaming(false);
                 setAgentProgressPercent(100);
                 setTickets(prevT => {
-                  const exists = prevT.some(t => t.key === prevKey);
+                  const exists = prevT.some(t => t.key === targetTicket);
                   if (exists) {
-                    return prevT.map(t => t.key === prevKey ? { ...t, status: 'PR Ready', prUrl: data.pr_url } : t);
+                    return prevT.map(t => t.key === targetTicket ? { ...t, status: 'PR Ready', prUrl: data.pr_url } : t);
                   } else {
                     return [...prevT, {
-                      key: prevKey,
+                      key: targetTicket,
                       title: 'PR Created',
                       description: '',
                       status: 'PR Ready',
@@ -994,13 +1067,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     } as JiraTicket];
                   }
                 });
-                setAgentLogs(prev => [...prev, {
-                    id: `log-${Date.now()}-pr`,
-                    timestamp: new Date().toLocaleTimeString(),
-                    level: 'SUCCESS',
-                    tag: 'GitHub',
-                    message: `Pull Request successfully created at: ${data.pr_url}`
-                }]);
+                appendTicketLog(targetTicket, {
+                  id: `log-${Date.now()}-pr`,
+                  timestamp: new Date().toLocaleTimeString(),
+                  level: 'SUCCESS',
+                  tag: 'GitHub',
+                  message: `Pull Request successfully created at: ${data.pr_url}`
+                });
                 
                 // Automatically transition Jira ticket
                 fetch(`${baseUrl}/developer/integrations/jira/transition`, {
@@ -1020,11 +1093,10 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               if (data.event_type === 'error') {
                 setIsStreaming(false);
                 setPendingApproval(null);
-                const failedTicket = data.ticket_id || prevKey;
                 setAgentRunningTicketKey(null);
-                if (failedTicket) {
-                  updateTicketStatus(failedTicket, 'To Do');
-                  fetch(`${baseUrl}/developer/executions/${failedTicket}/fail`, {
+                if (targetTicket) {
+                  updateTicketStatus(targetTicket, 'To Do');
+                  fetch(`${baseUrl}/developer/executions/${targetTicket}/fail`, {
                     method: 'POST',
                     headers: {
                       'Content-Type': 'application/json',
@@ -1035,13 +1107,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     })
                   }).catch(console.error);
                 }
-                setAgentLogs(prev => [...prev, {
-                    id: `log-${Date.now()}-error`,
-                    timestamp: new Date().toLocaleTimeString(),
-                    level: 'ERROR',
-                    tag: 'Worker',
-                    message: `Agent execution failed: ${data.payload}. Ticket status reset to To Do.`
-                }]);
+                appendTicketLog(targetTicket, {
+                  id: `log-${Date.now()}-error`,
+                  timestamp: new Date().toLocaleTimeString(),
+                  level: 'ERROR',
+                  tag: 'Worker',
+                  message: `Agent execution failed: ${data.payload}. Ticket status reset to To Do.`
+                });
               }
 
               if (data.event_type === 'interrupt') {
@@ -1049,7 +1121,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 setIsStreaming(false);
               }
 
-              if (data.event_type !== 'on_chat_model_stream') {
+              // Exclude streaming tokens, pr_created, error, and interrupt from the generic logger
+              if (
+                data.event_type !== 'on_chat_model_stream' &&
+                data.event_type !== 'pr_created' &&
+                data.event_type !== 'error' &&
+                data.event_type !== 'interrupt'
+              ) {
                 let niceMessage = `${data.event_type} ${data.node ? `-> ${data.node}` : ''}`;
                 
                 if (data.event_type === 'on_chain_start') {
@@ -1071,16 +1149,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                    }
                 }
                 
-                setAgentLogs(prev => [
-                  ...prev,
-                  {
-                    id: `log-${Date.now()}-${Math.random()}`,
-                    timestamp: new Date().toLocaleTimeString(),
-                    level: 'INFO',
-                    tag: data.node || 'AgentWorker',
-                    message: niceMessage
-                  }
-                ]);
+                appendTicketLog(targetTicket, {
+                  id: `log-${Date.now()}-${Math.random()}`,
+                  timestamp: new Date().toLocaleTimeString(),
+                  level: 'INFO',
+                  tag: data.node || 'AgentWorker',
+                  message: niceMessage
+                });
               }
             }
             return prevKey;
@@ -1089,13 +1164,23 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           console.error(e);
         }
       };
+
       ws.onclose = () => {
-         setTimeout(connectWs, 3000);
+        if (!isCancelled) {
+          reconnectTimer = setTimeout(connectWs, 3000);
+        }
       };
     };
+
     connectWs();
+
     return () => {
-      if (ws) ws.close();
+      isCancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
     };
   }, []);
 
@@ -1363,7 +1448,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         message: `Initialized autonomous runner for ${ticketKey}. Base branch: ${baseBranch}. Target branch: ${newBranch}. Task: "${title}"`
       }
     ];
-    setAgentLogs(initialLogs);
+    setTicketLogsMap(prev => ({ ...prev, [ticketKey]: initialLogs }));
 
     // Call actual backend to trigger execution
     try {
@@ -1382,21 +1467,26 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         })
       });
       if (!response.ok) {
-        throw new Error('Failed to enqueue job');
+        const errJson = await response.json().catch(() => null);
+        const errMsg = errJson?.detail || 'Failed to enqueue job';
+        throw new Error(errMsg);
       }
-    } catch (e) {
+      // Update ticket state to In Progress only on successful enqueue
+      updateTicketStatus(ticketKey, 'In Progress');
+    } catch (e: any) {
       console.error(e);
       setIsStreaming(false);
+      setAgentRunningTicketKey(null);
+      const errMsg = e?.message || 'Failed to contact backend.';
+      toast.error(errMsg);
       setAgentLogs(prev => [...prev, {
         id: `log-${Date.now()}-error`,
         timestamp: new Date().toLocaleTimeString(),
         level: 'ERROR',
         tag: 'LangGraph',
-        message: 'Failed to contact backend.'
+        message: errMsg
       }]);
     }
-    // Update ticket state to In Progress
-    updateTicketStatus(ticketKey, 'In Progress');
 
     // Note: The rest of the execution state is handled by the WebSocket listener.
   };
@@ -1647,6 +1737,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         cancelAgentRun,
         approvePullRequest,
         resetDemoState,
+        anthropicStatus,
+        fetchAnthropicStatus,
 
         minPasswordLength,
         setMinPasswordLength,

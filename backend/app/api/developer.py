@@ -55,6 +55,13 @@ async def execute_agent(
     # if usage > (company.run_cap * threshold_pct / 100):
     #    print(f"WARNING: Tenant {company.name} has exceeded the {threshold_pct}% quota threshold.")
 
+    # 1.1 Verify Anthropic API Key
+    if not current_user.anthropic_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Anthropic API key is not configured. Please connect your Anthropic API key in Integrations before executing the AI agent."
+        )
+
     # Connect to redis
     redis_client = aioredis.Redis.from_url(settings.REDIS_URL)
     
@@ -81,6 +88,7 @@ async def execute_agent(
         "target_repo": req.target_repo,
         "ticket_type": req.ticket_type,
         "github_token": decrypt_token(current_user.github_token),
+        "anthropic_api_key": decrypt_token(current_user.anthropic_api_key),
         "tenant_id": company.id,
         "tenant_domain": company.domain,
         # 2. Inject Circuit Breaker guardrail for the LangGraph execution loop
@@ -168,6 +176,7 @@ async def resume_agent(
         "decision": req.decision,
         "feedback": req.feedback,
         "github_token": decrypt_token(current_user.github_token),
+        "anthropic_api_key": decrypt_token(current_user.anthropic_api_key) if current_user.anthropic_api_key else None,
         "target_repo": req.target_repo,
         "base_branch": req.base_branch,
         "ticket_type": req.ticket_type
@@ -496,6 +505,55 @@ async def get_jira_status(
         "domain": current_user.jira_domain,
         "email": current_user.jira_email
     }
+
+class AnthropicIntegrationRequest(BaseModel):
+    api_key: str
+
+@router.get("/integrations/anthropic/status")
+async def get_anthropic_status(
+    current_user: User = Depends(get_current_user)
+):
+    if not current_user.anthropic_api_key:
+        return {"connected": False, "masked_key": None}
+    
+    plain_token = decrypt_token(current_user.anthropic_api_key)
+    if not plain_token:
+        return {"connected": False, "masked_key": None}
+        
+    masked = plain_token[:10] + "••••••••" + plain_token[-4:] if len(plain_token) > 14 else "sk-ant-••••"
+    return {
+        "connected": True,
+        "masked_key": masked
+    }
+
+@router.post("/integrations/anthropic")
+async def save_anthropic_integration(
+    req: AnthropicIntegrationRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    key = req.api_key.strip()
+    if not key.startswith("sk-ant-") or len(key) < 20:
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid Anthropic API key format. Key must start with 'sk-ant-' and be a valid Anthropic credential."
+        )
+    
+    from app.core.security import encrypt_token
+    current_user.anthropic_api_key = encrypt_token(key)
+    await db.commit()
+    
+    masked = key[:10] + "••••••••" + key[-4:] if len(key) > 14 else "sk-ant-••••"
+    return {"message": "Anthropic API key connected successfully", "connected": True, "masked_key": masked}
+
+@router.post("/integrations/anthropic/disconnect")
+async def disconnect_anthropic_integration(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    current_user.anthropic_api_key = None
+    await db.commit()
+    return {"message": "Anthropic API key disconnected successfully", "connected": False}
 
 async def transition_jira_issue(current_user: User, issue_key: str, target_status: str, comment: str = None):
     if not current_user.jira_domain or not current_user.jira_token:

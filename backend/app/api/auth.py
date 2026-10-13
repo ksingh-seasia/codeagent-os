@@ -94,19 +94,34 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         }
     }
 
-def send_reset_email(email_to: str, reset_token: str):
+def send_reset_email(email_to: str, reset_token: str, role: str = None):
+    # Route link to appropriate portal port
+    if role == "SUPER_ADMIN":
+        port = 3000
+    elif role == "TENANT_ADMIN":
+        port = 3001
+    else:
+        port = 3002
+        
+    reset_link = f"http://localhost:{port}/reset-password?token={reset_token}"
+    
+    print(f"\n========================================")
+    print(f" PASSWORD RESET REQUEST")
+    print(f" User Email: {email_to}")
+    print(f" Reset Token: {reset_token}")
+    print(f" Reset Link: {reset_link}")
+    print(f"========================================\n")
+
     try:
         msg = MIMEMultipart()
         msg['From'] = settings.MAIL_FROM
         msg['To'] = email_to
         msg['Subject'] = "Password Reset Request"
         
-        # Link to frontend reset page
-        reset_link = f"http://localhost:3002/reset-password?token={reset_token}"
         body = f"Click the following link to reset your password: {reset_link}"
         msg.attach(MIMEText(body, 'plain'))
         
-        server = smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT)
+        server = smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT, timeout=10)
         if settings.MAIL_STARTTLS:
             server.starttls()
         if settings.USE_CREDENTIALS:
@@ -115,7 +130,7 @@ def send_reset_email(email_to: str, reset_token: str):
         server.quit()
         print(f"Reset email successfully sent to {email_to}")
     except Exception as e:
-        print(f"Failed to send email to {email_to}: {e}")
+        print(f"Notice: SMTP delivery failed for {email_to} ({e}). Used server console fallback.")
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
@@ -125,11 +140,40 @@ async def forgot_password(req: ForgotPasswordRequest, background_tasks: Backgrou
     user_result = await db.execute(select(User).where(User.email == req.email))
     user = user_result.scalars().first()
     if user:
-        reset_token = create_access_token(data={"sub": str(user.id)}, expires_delta=timedelta(minutes=15))
-        background_tasks.add_task(send_reset_email, req.email, reset_token)
+        reset_token = create_access_token(subject=str(user.id), expires_delta=timedelta(minutes=15))
+        background_tasks.add_task(send_reset_email, req.email, reset_token, user.role)
     else:
         print(f"Password reset requested for unknown email: {req.email}")
     return {"message": "If the email is registered, a reset link will be sent securely."}
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+@router.post("/reset-password")
+async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        payload = jwt.decode(req.token, settings.SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+        
+    try:
+        user_id_int = int(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid token payload")
+
+    user_result = await db.execute(select(User).where(User.id == user_id_int))
+    user = user_result.scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    from app.core.security import get_password_hash
+    user.password_hash = get_password_hash(req.new_password)
+    await db.commit()
+    return {"message": "Password reset successfully. You can now log in with your new password."}
 
 class ChangePasswordRequest(BaseModel):
     old_password: str

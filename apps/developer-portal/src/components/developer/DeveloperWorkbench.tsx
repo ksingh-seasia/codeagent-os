@@ -23,7 +23,8 @@ export const DeveloperWorkbench: React.FC = () => {
     setActiveTicketsCount,
     tickets,
     executionRuns,
-    fetchExecutionHistory
+    fetchExecutionHistory,
+    anthropicStatus
   } = usePlatform();
 
   const [ticketSearch, setTicketSearch] = useState('');
@@ -39,6 +40,15 @@ export const DeveloperWorkbench: React.FC = () => {
       setMobileDetailTab('terminal');
     }
   }, [isStreaming, agentRunningTicketKey]);
+
+  const ensureAnthropicConnected = (): boolean => {
+    if (anthropicStatus && !anthropicStatus.connected) {
+      toast.error("Please connect your Anthropic API key in Integrations before executing the AI agent.");
+      setDeveloperPage('integrations');
+      return false;
+    }
+    return true;
+  };
 
   // A plan waiting for approval lives on the progress tab - surface it.
   useEffect(() => {
@@ -453,6 +463,7 @@ export const DeveloperWorkbench: React.FC = () => {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
+                                if (!ensureAnthropicConnected()) return;
                                 const repoSelect = document.getElementById(`repo-select-${ticket.key}`) as HTMLSelectElement;
                                 const branchInput = document.getElementById(`branch-input-${ticket.key}`) as HTMLInputElement;
                                 const repo = repoSelect?.value;
@@ -464,10 +475,18 @@ export const DeveloperWorkbench: React.FC = () => {
                                 }
                                 triggerAgentRun(ticket.key, branch, repo, ticket.description, ticket.title, (ticket as any).issuetype);
                               }}
-                              className="h-9 lg:h-7 w-full rounded-lg bg-[#3525cd] hover:bg-[#4f46e5] text-white font-mono text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs active:scale-[0.98] cursor-pointer"
+                              className={`h-9 lg:h-7 w-full rounded-lg font-mono text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs active:scale-[0.98] cursor-pointer ${
+                                anthropicStatus && !anthropicStatus.connected
+                                  ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                                  : 'bg-[#3525cd] hover:bg-[#4f46e5] text-white'
+                              }`}
                             >
-                              <span className="material-symbols-outlined text-[14px]">auto_mode</span>
-                              <span>Execute with AI</span>
+                              <span className="material-symbols-outlined text-[14px]">
+                                {anthropicStatus && !anthropicStatus.connected ? 'key' : 'auto_mode'}
+                              </span>
+                              <span>
+                                {anthropicStatus && !anthropicStatus.connected ? 'Connect Claude Key to Run' : 'Execute with AI'}
+                              </span>
                             </button>
                           </div>
                         )
@@ -566,6 +585,7 @@ export const DeveloperWorkbench: React.FC = () => {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  if (!ensureAnthropicConnected()) return;
                                   const repoSelect = document.getElementById(`repo-select-${child.key}`) as HTMLSelectElement;
                                   const branchInput = document.getElementById(`branch-input-${child.key}`) as HTMLInputElement;
                                   const repo = repoSelect?.value;
@@ -577,10 +597,18 @@ export const DeveloperWorkbench: React.FC = () => {
                                   }
                                   triggerAgentRun(child.key, branch, repo, child.description, child.title, (child as any).issuetype);
                                 }}
-                                className="h-9 lg:h-7 w-full rounded-lg bg-[#3525cd] hover:bg-[#4f46e5] text-white font-mono text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs active:scale-[0.98] cursor-pointer"
+                                className={`h-9 lg:h-7 w-full rounded-lg font-mono text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs active:scale-[0.98] cursor-pointer ${
+                                  anthropicStatus && !anthropicStatus.connected
+                                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                                    : 'bg-[#3525cd] hover:bg-[#4f46e5] text-white'
+                                }`}
                               >
-                                <span className="material-symbols-outlined text-[14px]">play_arrow</span>
-                                <span>Execute AI on Subtask</span>
+                                <span className="material-symbols-outlined text-[14px]">
+                                  {anthropicStatus && !anthropicStatus.connected ? 'key' : 'play_arrow'}
+                                </span>
+                                <span>
+                                  {anthropicStatus && !anthropicStatus.connected ? 'Connect Claude Key' : 'Execute AI on Subtask'}
+                                </span>
                               </button>
                             </div>
                           )}
@@ -639,6 +667,26 @@ export const DeveloperWorkbench: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Anthropic BYOK Key Notification Banner */}
+          {anthropicStatus && !anthropicStatus.connected && (
+            <div className="bg-amber-50/90 border-b border-amber-200 px-4 py-2.5 flex items-center justify-between gap-3 text-xs font-mono text-amber-950 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="material-symbols-outlined text-amber-600 text-[18px] shrink-0">key</span>
+                <span className="truncate">
+                  <strong>Anthropic API Key Required:</strong> Add your Claude API key to run autonomous coding agents.
+                </span>
+              </div>
+              <button
+                onClick={() => setDeveloperPage('integrations')}
+                className="px-2.5 py-1 rounded bg-[#3525cd] hover:bg-[#4f46e5] text-white font-semibold text-[11px] transition-colors shrink-0 shadow-xs flex items-center gap-1 cursor-pointer"
+              >
+                <span>Configure Key</span>
+                <span className="material-symbols-outlined text-[13px]">arrow_forward</span>
+              </button>
+            </div>
+          )}
+
           {selectedTicket ? (
             <>
               {/* Active Ticket Details Header Card */}
@@ -692,6 +740,7 @@ export const DeveloperWorkbench: React.FC = () => {
                 ) : (
                   <button
                     onClick={() => {
+                      if (!ensureAnthropicConnected()) return;
                       const repo = ticketRepoSelections[selectedTicket.key] || (selectedTicket as any).targetRepo || (githubRepos[0]?.full_name);
                       const branchInput = (document.getElementById(`branch-input-${selectedTicket.key}`) as HTMLInputElement)?.value || 'main';
                       triggerAgentRun(
@@ -703,10 +752,20 @@ export const DeveloperWorkbench: React.FC = () => {
                         (selectedTicket as any).issuetype
                       );
                     }}
-                    className="h-8 px-3 rounded-lg bg-white border border-[#3525cd] text-[#3525cd] hover:bg-[#eff4ff] text-xs font-mono transition-colors flex items-center gap-1 cursor-pointer font-semibold"
+                    className={`h-8 px-3 rounded-lg border text-xs font-mono transition-colors flex items-center gap-1 cursor-pointer font-semibold ${
+                      anthropicStatus && !anthropicStatus.connected
+                        ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100'
+                        : 'bg-white border-[#3525cd] text-[#3525cd] hover:bg-[#eff4ff]'
+                    }`}
                   >
-                    <span className="material-symbols-outlined text-[16px]">memory</span>
-                    <span>{selectedTicket.status === 'Open' ? 'Execute AI Agent' : 'Re-run Agent'}</span>
+                    <span className="material-symbols-outlined text-[16px]">
+                      {anthropicStatus && !anthropicStatus.connected ? 'vpn_key_alert' : 'memory'}
+                    </span>
+                    <span>
+                      {anthropicStatus && !anthropicStatus.connected
+                        ? 'Connect Key to Execute'
+                        : (selectedTicket.status === 'Open' ? 'Execute AI Agent' : 'Re-run Agent')}
+                    </span>
                   </button>
                 )}
 

@@ -44,6 +44,7 @@ class User(Base):
     jira_token = Column(String, nullable=True)
     jira_domain = Column(String, nullable=True)
     jira_email = Column(String, nullable=True)
+    anthropic_api_key = Column(String, nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     invite_token = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

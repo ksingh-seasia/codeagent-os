@@ -220,7 +220,8 @@ async def create_developer(
     developer_roles = ["Developer", "Senior Dev", "Staff Dev", "Lead / Principal", "DEVELOPER"]
     result = await db.execute(select(User).where(
         User.company_id == current_user.company_id,
-        User.role.in_(developer_roles)
+        User.role.in_(developer_roles),
+        User.status != "REVOKED"
     ))
     current_devs = len(result.scalars().all())
     
@@ -232,18 +233,24 @@ async def create_developer(
     existing_user = result.scalars().first()
     
     if existing_user:
-        if existing_user.company_id == current_user.company_id and existing_user.status == "REVOKED":
+        if existing_user.status == "REVOKED":
             try:
-                # Reactivate the revoked developer
+                # Reactivate developer or transfer revoked developer to this company
                 temp_password = generate_strong_password()
                 import secrets
                 invite_token = secrets.token_urlsafe(32)
                 
+                existing_user.company_id = current_user.company_id
                 existing_user.status = "Invited"
                 existing_user.role = developer_in.role
                 existing_user.name = developer_in.name
                 existing_user.password_hash = get_password_hash(temp_password)
                 existing_user.invite_token = invite_token
+                # Clear tokens from any previous company association
+                existing_user.github_token = None
+                existing_user.jira_token = None
+                existing_user.jira_domain = None
+                existing_user.jira_email = None
                 
                 await db.commit()
                 await db.refresh(existing_user)
@@ -270,7 +277,7 @@ async def create_developer(
                 print("REACTIVATE ERROR:", error_trace)
                 raise HTTPException(status_code=500, detail=f"Reactivate error: {str(e)}")
         else:
-            raise HTTPException(status_code=400, detail="User with this email already exists")
+            raise HTTPException(status_code=400, detail="User with this email already exists and is currently active.")
 
     temp_password = generate_strong_password()
     hashed_password = get_password_hash(temp_password)
