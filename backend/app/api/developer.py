@@ -1029,5 +1029,11 @@ async def github_pr_comments(
         return []
 
 import logging
-logging.basicConfig(filename='D:/debug.log', level=logging.DEBUG)
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
