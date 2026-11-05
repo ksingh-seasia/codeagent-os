@@ -33,7 +33,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://super-admin-portal-six.vercel.app","https://tenant-admin-portal-jet.vercel.app","https://codeagent-os.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
