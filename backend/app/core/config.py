@@ -1,4 +1,37 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+
+def clean_redis_url(raw_url: str | None) -> str:
+    """Normalize a REDIS_URL copied from a provider dashboard.
+
+    Mirrors clean_redis_url() in the multi-agent-mesh worker so the API and the
+    worker accept exactly the same value. Handles surrounding quotes, values
+    pasted as a full `redis-cli ... -u <url>` command, bare host:port values,
+    and Upstash hosts (which require TLS, i.e. the rediss:// scheme).
+    """
+    if not raw_url:
+        return ""
+
+    url = raw_url.strip().strip('"').strip("'")
+
+    if " -u " in url:
+        url = url.split(" -u ")[-1].strip()
+    elif url.startswith("redis-cli"):
+        for part in url.split():
+            if part.startswith(("redis://", "rediss://")):
+                url = part
+                break
+
+    # A bare "host:6379" has no scheme, which redis-py rejects outright.
+    if url and "://" not in url:
+        url = f"redis://{url}"
+
+    if "upstash.io" in url and url.startswith("redis://"):
+        url = url.replace("redis://", "rediss://", 1)
+
+    return url
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Code Agent Platform"
@@ -28,6 +61,11 @@ class Settings(BaseSettings):
     # Public URLs (override in deployment, e.g. on Render)
     BACKEND_URL: str = "http://localhost:8000"
     DEVELOPER_PORTAL_URL: str = "http://localhost:3002"
+
+    @field_validator("REDIS_URL")
+    @classmethod
+    def _clean_redis_url(cls, v: str) -> str:
+        return clean_redis_url(v)
 
     class Config:
         env_file = ".env"
