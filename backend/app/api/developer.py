@@ -673,18 +673,15 @@ async def get_tickets(
                 headers={"Authorization": f"Basic {auth_encoded}", "Accept": "application/json"}
             )
             if resp.status_code != 200:
-                with open('D:/codeagent-os---multi-tenant-ai-coding-infrastructure/backend/debug.log', 'a') as f:
-                    f.write(f"Jira API Error {resp.status_code}: {resp.text}\n")
-                print(f"Jira API Error: {resp.text}")
+                print(f"Jira API Error {resp.status_code}: {resp.text}")
                 return empty_res
             data = resp.json()
             
             items = data.get("issues", data.get("values", []))
             total = data.get("total", len(items))
             
-            with open('D:/codeagent-os---multi-tenant-ai-coding-infrastructure/backend/debug.log', 'a') as f:
-                f.write(f"Jira API Success - items: {len(items)}, total: {total}, raw: {str(data)[:200]}\n")
-            
+            print(f"Jira API Success - items: {len(items)}, total: {total}")
+
             return {
                 "data": items,
                 "meta": {
@@ -696,8 +693,6 @@ async def get_tickets(
                 }
             }
     except Exception as e:
-        with open('D:/codeagent-os---multi-tenant-ai-coding-infrastructure/backend/debug.log', 'a') as f:
-            f.write(f"Jira API Exception: {str(e)}\n")
         print(f"Error connecting to Jira: {str(e)}")
         return empty_res
 
