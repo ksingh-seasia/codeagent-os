@@ -31,9 +31,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://super-admin-portal-six.vercel.app","https://tenant-admin-portal-jet.vercel.app","https://codeagent-os.vercel.app"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002","https://super-admin-portal-six.vercel.app","https://tenant-admin-portal-jet.vercel.app","https://codeagent-os.vercel.app"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +73,23 @@ import sys
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    with open("500_error.log", "w") as f:
-        f.write(traceback.format_exc())
-    return JSONResponse(status_code=500, content={"detail": f"Internal Server Error: {str(exc)}"})
+    # Print to stderr so the full traceback is visible in the Render log stream.
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+
+    # This handler runs inside ServerErrorMiddleware, which sits OUTSIDE CORSMiddleware,
+    # so the CORS headers must be set here. Without them the browser reports a misleading
+    # "No 'Access-Control-Allow-Origin' header" error and hides the real 500 message.
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal Server Error: {str(exc)}"},
+        headers=headers,
+    )

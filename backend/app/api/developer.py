@@ -41,16 +41,18 @@ async def execute_agent(
     # 1. Check Tenant Status & Quotas
     comp_result = await db.execute(select(Company).where(Company.id == current_user.company_id))
     company = comp_result.scalars().first()
-    
+    if not company:
+        raise HTTPException(status_code=403, detail="Tenant organization not found for this user.")
+
     platform_settings = await get_or_create_platform_settings(db)
-    
+
     if platform_settings.auto_suspend_billing and company.status == "SUSPENDED":
         raise HTTPException(status_code=403, detail="Tenant execution disabled due to billing suspension lapse.")
 
     # Mock checking run cap usage (e.g. counting executions in DB for this month)
     # If executions >= company.run_cap, block it.
     # For the threshold warning:
-    threshold_str = platform_settings.quota_threshold.replace('%', '')
+    threshold_str = (platform_settings.quota_threshold or "90%").replace('%', '')
     threshold_pct = int(threshold_str) if threshold_str.isdigit() else 90
     # if usage > (company.run_cap * threshold_pct / 100):
     #    print(f"WARNING: Tenant {company.name} has exceeded the {threshold_pct}% quota threshold.")
@@ -583,6 +585,7 @@ async def transition_jira_issue(current_user: User, issue_key: str, target_statu
         resp = await client.get(trans_url, headers=headers)
         if resp.status_code == 200:
             data = resp.json()
+            transitions = data.get("transitions", [])
             # Find matching transition (simple substring match with smart synonyms)
             transition_id = None
             target_lower = target_status.lower()
