@@ -762,7 +762,7 @@ async def github_auth(current_user: User = Depends(get_current_user)):
     client_id = getattr(settings, 'GITHUB_CLIENT_ID', 'mock_client_id')
     # Use stateless base64 state to avoid Redis dependency for local testing
     state = base64.urlsafe_b64encode(f"{current_user.id}||{uuid.uuid4()}".encode('utf-8')).decode('utf-8')
-    redirect_uri = "http://localhost:8000/api/v1/developer/integrations/github/callback"
+    redirect_uri = f"{settings.BACKEND_URL.rstrip('/')}/api/v1/developer/integrations/github/callback"
     return {"url": f"https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope=repo%20user&state={state}"}
 
 @router.get("/integrations/github/callback")
@@ -775,26 +775,26 @@ async def github_callback(
     client_secret = getattr(settings, 'GITHUB_CLIENT_SECRET', 'mock_secret')
     
     if not state:
-        return RedirectResponse(url="http://localhost:3002/developer?github_connected=false&error=invalid_state")
+        return RedirectResponse(url=f"{settings.DEVELOPER_PORTAL_URL.rstrip('/')}/developer?github_connected=false&error=invalid_state")
         
     try:
         decoded_state = base64.urlsafe_b64decode(state.encode('utf-8')).decode('utf-8')
         user_id_str = decoded_state.split("||")[0]
         user_id = int(user_id_str)
     except Exception:
-        return RedirectResponse(url="http://localhost:3002/developer?github_connected=false&error=invalid_state")
+        return RedirectResponse(url=f"{settings.DEVELOPER_PORTAL_URL.rstrip('/')}/developer?github_connected=false&error=invalid_state")
 
     user_result = await db.execute(select(User).where(User.id == user_id))
     current_user = user_result.scalars().first()
     
     if not current_user:
-        return RedirectResponse(url="http://localhost:3002/developer?github_connected=false&error=user_not_found")
+        return RedirectResponse(url=f"{settings.DEVELOPER_PORTAL_URL.rstrip('/')}/developer?github_connected=false&error=user_not_found")
     
     if client_id == 'mock_client_id' or code == 'mock_code':
         # Mock flow for demo
         current_user.github_token = encrypt_token("mock_gh_token_12345")
         await db.commit()
-        return RedirectResponse(url="http://localhost:3002/developer?github_connected=true")
+        return RedirectResponse(url=f"{settings.DEVELOPER_PORTAL_URL.rstrip('/')}/developer?github_connected=true")
         
     # Real flow
     async with httpx.AsyncClient() as client:
@@ -807,9 +807,9 @@ async def github_callback(
         if "access_token" in data:
             current_user.github_token = encrypt_token(data["access_token"])
             await db.commit()
-            return RedirectResponse(url="http://localhost:3002/developer?github_connected=true")
+            return RedirectResponse(url=f"{settings.DEVELOPER_PORTAL_URL.rstrip('/')}/developer?github_connected=true")
         else:
-            return RedirectResponse(url="http://localhost:3002/developer?github_connected=false&error=no_token")
+            return RedirectResponse(url=f"{settings.DEVELOPER_PORTAL_URL.rstrip('/')}/developer?github_connected=false&error=no_token")
 
 @router.get("/integrations/github/status")
 async def github_status(

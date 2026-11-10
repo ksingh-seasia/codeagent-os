@@ -193,7 +193,7 @@ async def github_login(redirect_uri: str = Query(...), invite_token: str = None)
     if not settings.GITHUB_CLIENT_ID:
         return RedirectResponse(url=f"{redirect_uri}?error=GITHUB_CLIENT_ID not configured")
         
-    backend_callback = "http://localhost:8000/api/v1/auth/github/callback"
+    backend_callback = f"{settings.BACKEND_URL.rstrip('/')}/api/v1/auth/github/callback"
     state = f"{redirect_uri}||{invite_token}" if invite_token else redirect_uri # Pass both via state
     github_auth_url = f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={backend_callback}&scope=user:email%20repo&state={state}"
     return RedirectResponse(url=github_auth_url)
@@ -218,7 +218,7 @@ async def github_callback(code: str, state: str, db: AsyncSession = Depends(get_
                 "client_id": settings.GITHUB_CLIENT_ID,
                 "client_secret": settings.GITHUB_CLIENT_SECRET,
                 "code": code,
-                "redirect_uri": "http://localhost:8000/api/v1/auth/github/callback"
+                "redirect_uri": f"{settings.BACKEND_URL.rstrip('/')}/api/v1/auth/github/callback"
             }
         )
         token_data = token_response.json()

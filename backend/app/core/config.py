@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
 
+    # Public URLs (override in deployment, e.g. on Render)
+    BACKEND_URL: str = "http://localhost:8000"
+    DEVELOPER_PORTAL_URL: str = "http://localhost:3002"
+
     class Config:
         env_file = ".env"
 
