@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     USE_CREDENTIALS: bool = True
     VALIDATE_CERTS: bool = True
 
+    # HTTPS email providers. Render blocks outbound SMTP ports (25/465/587), so
+    # on Render one of these keys must be set or no mail can leave the host.
+    BREVO_API_KEY: str = ""
+    RESEND_API_KEY: str = ""
+    SENDGRID_API_KEY: str = ""
+
     # GitHub OAuth
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
@@ -61,6 +67,8 @@ class Settings(BaseSettings):
     # Public URLs (override in deployment, e.g. on Render)
     BACKEND_URL: str = "http://localhost:8000"
     DEVELOPER_PORTAL_URL: str = "http://localhost:3002"
+    SUPER_ADMIN_PORTAL_URL: str = "http://localhost:3000"
+    TENANT_ADMIN_PORTAL_URL: str = "http://localhost:3001"
 
     @field_validator("REDIS_URL")
     @classmethod

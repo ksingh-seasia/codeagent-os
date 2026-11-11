@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePlatform } from '../../context/PlatformContext';
 import { api } from '../../api/client';
 
@@ -33,6 +33,19 @@ export const SystemSettingsView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'general' | 'email' | 'quotas' | 'account'>('general');
   const [saveToast, setSaveToast] = useState(false);
   const [testPingStatus, setTestPingStatus] = useState<string | null>(null);
+  const [testPingOk, setTestPingOk] = useState<boolean | null>(null);
+  const [emailStatus, setEmailStatus] = useState<any>(null);
+
+  const loadEmailStatus = async () => {
+    try {
+      setEmailStatus(await api.superAdmin.getEmailStatus());
+    } catch (e) {
+      console.error(e);
+      setEmailStatus(null);
+    }
+  };
+
+  useEffect(() => { loadEmailStatus(); }, []);
   
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -99,15 +112,21 @@ export const SystemSettingsView: React.FC = () => {
   };
 
   const handleTestPing = async () => {
-    setTestPingStatus('Sending test ping...');
+    setTestPingStatus('Sending test email...');
+    setTestPingOk(null);
     try {
-      const result = await api.superAdmin.testEmail("admin@codeagent.io");
-      setTestPingStatus(result.message || 'Test email successfully delivered to admin@codeagent.io just now!');
-      setTimeout(() => setTestPingStatus(null), 4000);
-    } catch (e) {
+      // No recipient: the API sends to the signed-in super admin's own address.
+      const result = await api.superAdmin.testEmail();
+      setTestPingOk(true);
+      setTestPingStatus(result.message || 'Test email sent.');
+    } catch (e: any) {
       console.error(e);
-      setTestPingStatus('Failed to send test ping.');
-      setTimeout(() => setTestPingStatus(null), 4000);
+      setTestPingOk(false);
+      setTestPingStatus(
+        e?.response?.data?.detail || e?.message || 'Failed to send test email.'
+      );
+    } finally {
+      loadEmailStatus();
     }
   };
 
@@ -381,10 +400,19 @@ export const SystemSettingsView: React.FC = () => {
                 <span className="material-symbols-outlined text-[#3525cd] text-[20px]">outgoing_mail</span>
                 <h2 className="text-sm font-semibold text-[#0b1c30]">Notification & SMTP Dispatch</h2>
               </div>
-              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
-                <span>Connected & Verified</span>
-              </div>
+              {(() => {
+                const ok = emailStatus?.configured;
+                const cls = ok
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-amber-50 text-amber-800 border-amber-300';
+                const dot = ok ? 'bg-emerald-600' : 'bg-amber-500';
+                return (
+                  <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-xs font-mono ${cls}`} title={emailStatus?.detail || ''}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${dot}`}></span>
+                    <span>{emailStatus ? (emailStatus.label || 'Not configured') : 'Checking...'}</span>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="p-6 space-y-4">
@@ -462,23 +490,69 @@ export const SystemSettingsView: React.FC = () => {
                 </div>
               </div>
 
+              {emailStatus && !emailStatus.configured && (
+                <div className="p-2.5 bg-amber-50 border border-amber-300 text-amber-900 text-xs rounded">
+                  No mail transport is configured, so no email is being sent.
+                  Set <span className="font-mono">BREVO_API_KEY</span> (or
+                  <span className="font-mono"> RESEND_API_KEY</span>) in the backend
+                  environment, or fill in the SMTP fields above.
+                </div>
+              )}
+
+              {emailStatus?.configured && emailStatus.transport !== 'smtp' && (
+                <div className="p-2.5 bg-[#eff4ff] border border-[#c7c4d8] text-[#565e74] text-xs rounded">
+                  {emailStatus.detail} Sending as
+                  <strong className="text-[#0b1c30] font-mono"> {emailStatus.from_email}</strong>.
+                </div>
+              )}
+
               {testPingStatus && (
-                <div className="p-2.5 bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs rounded font-mono">
+                <div
+                  className={`p-2.5 border text-xs rounded font-mono ${
+                    testPingOk === false
+                      ? 'bg-red-50 border-red-300 text-red-800'
+                      : testPingOk
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                      : 'bg-[#eff4ff] border-[#c7c4d8] text-[#565e74]'
+                  }`}
+                >
                   {testPingStatus}
                 </div>
               )}
 
-              <div className="p-3 rounded-lg bg-[#f8f9ff] border border-[#c7c4d8]/60 flex items-center justify-between">
+              <div className="p-3 rounded-lg bg-[#f8f9ff] border border-[#c7c4d8]/60 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-xs text-[#565e74]">
-                  <span className="material-symbols-outlined text-[16px] text-emerald-600">verified</span>
-                  <span>Last test email delivered to <strong className="text-[#0b1c30] font-mono">admin@codeagent.io</strong> 14 mins ago.</span>
+                  {(() => {
+                    const last = emailStatus?.last_delivery;
+                    if (!last) {
+                      return (
+                        <>
+                          <span className="material-symbols-outlined text-[16px] text-[#565e74]">schedule</span>
+                          <span>No email has been sent since this backend instance started.</span>
+                        </>
+                      );
+                    }
+                    const when = new Date(last.at).toLocaleString();
+                    return (
+                      <>
+                        <span className={`material-symbols-outlined text-[16px] ${last.ok ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {last.ok ? 'verified' : 'error'}
+                        </span>
+                        <span>
+                          Last send {last.ok ? 'delivered to' : 'FAILED for'}{' '}
+                          <strong className="text-[#0b1c30] font-mono">{last.to}</strong> at {when}
+                          {!last.ok && <span className="block text-red-700 mt-0.5">{last.detail}</span>}
+                        </span>
+                      </>
+                    );
+                  })()}
                 </div>
                 <button
                   type="button"
                   onClick={handleTestPing}
-                  className="text-[#3525cd] hover:underline text-xs font-mono font-medium cursor-pointer"
+                  className="text-[#3525cd] hover:underline text-xs font-mono font-medium cursor-pointer whitespace-nowrap"
                 >
-                  Send Test Ping
+                  Send Test Email
                 </button>
               </div>
             </div>

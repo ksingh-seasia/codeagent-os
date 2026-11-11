@@ -15,24 +15,13 @@ from app.core.security import get_password_hash
 
 async def send_developer_invite_email(db: AsyncSession, to_email: str, company_name: str, developer_name: str, invite_token: str):
     from app.services.super_admin import get_or_create_platform_settings
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    
-    settings = await get_or_create_platform_settings(db)
-    if not settings.smtp_host or not settings.smtp_port or not settings.smtp_user or not settings.smtp_pass:
-        print(f"[WARNING] SMTP not configured. Could not send invite to {to_email}")
-        return False
-        
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"You have been invited to join {company_name} on CodeAgent OS"
-        msg["From"] = settings.from_email or "no-reply@codeagent.io"
-        msg["To"] = to_email
-        
-        login_url = f"http://localhost:3002/?invite_token={invite_token}" # Developer Portal is on 3002
-        
-        html = f"""
+    from app.services.email import send_email
+    from app.core.config import settings as app_settings
+
+    platform_settings = await get_or_create_platform_settings(db)
+    login_url = f"{app_settings.DEVELOPER_PORTAL_URL.rstrip('/')}/?invite_token={invite_token}"
+
+    html = f"""
         <html>
           <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
@@ -50,22 +39,16 @@ async def send_developer_invite_email(db: AsyncSession, to_email: str, company_n
             </div>
           </body>
         </html>
-        """
-        part = MIMEText(html, "html")
-        msg.attach(part)
-        
-        if str(settings.smtp_port) == '465':
-            server = smtplib.SMTP_SSL(settings.smtp_host, int(settings.smtp_port))
-        else:
-            server = smtplib.SMTP(settings.smtp_host, int(settings.smtp_port))
-            server.starttls()
-        server.login(settings.smtp_user, settings.smtp_pass)
-        server.sendmail(msg["From"], to_email, msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"[ERROR] Failed to send invite email to {to_email}: {str(e)}")
-        return False
+    """
+
+    ok, _detail = await send_email(
+        to_email,
+        f"You have been invited to join {company_name} on CodeAgent OS",
+        html,
+        platform_settings=platform_settings,
+    )
+    return ok
+
 
 router = APIRouter()
 def generate_strong_password(length=12):

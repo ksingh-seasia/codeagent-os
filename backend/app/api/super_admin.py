@@ -178,10 +178,24 @@ async def update_settings(
 ):
     return await update_platform_settings(db, data)
 
+@router.get("/settings/email-status")
+async def get_email_status(
+    current_user: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Real mail transport status for the Settings console."""
+    from app.services.email import transport_status
+    from app.services.super_admin import get_or_create_platform_settings
+
+    settings_row = await get_or_create_platform_settings(db)
+    return transport_status(settings_row)
+
 @router.post("/settings/test-email")
 async def send_test_email_endpoint(
     data: TestEmailRequest,
     current_user: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    return await send_test_email(db, data.email)
+    # Default to the signed-in admin so the test lands in an inbox they own.
+    target = (data.email or "").strip() or current_user.email
+    return await send_test_email(db, target)

@@ -3,9 +3,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 from sqlalchemy.future import select
 from pydantic import BaseModel, EmailStr
@@ -94,43 +91,42 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         }
     }
 
-def send_reset_email(email_to: str, reset_token: str, role: str = None):
-    # Route link to appropriate portal port
-    if role == "SUPER_ADMIN":
-        port = 3000
-    elif role == "TENANT_ADMIN":
-        port = 3001
-    else:
-        port = 3002
-        
-    reset_link = f"http://localhost:{port}/reset-password?token={reset_token}"
-    
-    print(f"\n========================================")
-    print(f" PASSWORD RESET REQUEST")
-    print(f" User Email: {email_to}")
-    print(f" Reset Token: {reset_token}")
-    print(f" Reset Link: {reset_link}")
-    print(f"========================================\n")
+async def send_reset_email(email_to: str, reset_token: str, role: str = None):
+    from app.services.email import send_email
 
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = settings.MAIL_FROM
-        msg['To'] = email_to
-        msg['Subject'] = "Password Reset Request"
-        
-        body = f"Click the following link to reset your password: {reset_link}"
-        msg.attach(MIMEText(body, 'plain'))
-        
-        server = smtplib.SMTP(settings.MAIL_SERVER, settings.MAIL_PORT, timeout=10)
-        if settings.MAIL_STARTTLS:
-            server.starttls()
-        if settings.USE_CREDENTIALS:
-            server.login(settings.MAIL_USERNAME, settings.MAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        print(f"Reset email successfully sent to {email_to}")
-    except Exception as e:
-        print(f"Notice: SMTP delivery failed for {email_to} ({e}). Used server console fallback.")
+    # Route link to the portal that matches the user's role.
+    if role == "SUPER_ADMIN":
+        base_url = settings.SUPER_ADMIN_PORTAL_URL
+    elif role == "TENANT_ADMIN":
+        base_url = settings.TENANT_ADMIN_PORTAL_URL
+    else:
+        base_url = settings.DEVELOPER_PORTAL_URL
+
+    reset_link = f"{base_url.rstrip('/')}/reset-password?token={reset_token}"
+
+    html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
+              <h2 style="color: #4f46e5; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px;">Password Reset</h2>
+              <p>We received a request to reset your CodeAgent OS password.</p>
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="{reset_link}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+                  Reset your password
+                </a>
+              </div>
+              <p>This link expires in 15 minutes. If you did not request a reset, you can ignore this email.</p>
+            </div>
+          </body>
+        </html>
+    """
+
+    ok, detail = await send_email(email_to, "Password Reset Request", html)
+    if not ok:
+        # Console fallback so local/unconfigured environments remain usable.
+        print(f"[PASSWORD RESET] Email delivery failed ({detail}).")
+        print(f"[PASSWORD RESET] Reset link for {email_to}: {reset_link}")
+
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr

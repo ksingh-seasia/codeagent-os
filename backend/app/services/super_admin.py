@@ -4,26 +4,15 @@ from fastapi import HTTPException, status
 import secrets
 import string
 
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from app.services.email import send_email, transport_name
 from app.models.domain import Company, User, License, PlatformSettings
 from app.schemas.super_admin import CompanyCreate, CompanyUpdate, LicenseCreate, LicenseUpdate, PlatformUserCreate, PlatformUserUpdate, PlatformSettingsUpdate
 from app.core.security import get_password_hash
 
 async def send_credentials_email(db: AsyncSession, to_email: str, password: str, company_name: str):
     settings = await get_or_create_platform_settings(db)
-    if not settings.smtp_host or not settings.smtp_port or not settings.smtp_user or not settings.smtp_pass:
-        print(f"[WARNING] SMTP not configured. Could not send credentials to {to_email}")
-        return False
-        
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Welcome to CodeAgent OS - {company_name} Credentials"
-        msg["From"] = settings.from_email or "no-reply@codeagent.io"
-        msg["To"] = to_email
-        
-        html = f"""
+
+    html = f"""
         <html>
           <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
@@ -38,22 +27,16 @@ async def send_credentials_email(db: AsyncSession, to_email: str, password: str,
             </div>
           </body>
         </html>
-        """
-        part = MIMEText(html, "html")
-        msg.attach(part)
-        
-        if settings.smtp_port in ['465', 465]:
-            server = smtplib.SMTP_SSL(settings.smtp_host, int(settings.smtp_port))
-        else:
-            server = smtplib.SMTP(settings.smtp_host, int(settings.smtp_port))
-            server.starttls()
-        server.login(settings.smtp_user, settings.smtp_pass)
-        server.sendmail(msg["From"], to_email, msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        print(f"[ERROR] Failed to send credentials email to {to_email}: {str(e)}")
-        return False
+    """
+
+    ok, _detail = await send_email(
+        to_email,
+        f"Welcome to CodeAgent OS - {company_name} Credentials",
+        html,
+        platform_settings=settings,
+    )
+    return ok
+
 
 async def get_dashboard_metrics(db: AsyncSession):
     result = await db.execute(select(Company))
@@ -413,26 +396,18 @@ async def update_platform_settings(db: AsyncSession, data: PlatformSettingsUpdat
 
 async def send_test_email(db: AsyncSession, to_email: str):
     settings = await get_or_create_platform_settings(db)
-    if not settings.smtp_host or not settings.smtp_port or not settings.smtp_user or not settings.smtp_pass:
-        raise HTTPException(status_code=400, detail="SMTP settings are not fully configured")
-    
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = "Platform Configuration - Test Email"
-        msg["From"] = settings.from_email or "no-reply@codeagent.io"
-        msg["To"] = to_email
-        
-        html = f"""
+    transport = transport_name()
+
+    html = f"""
         <html>
           <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
               <h2 style="color: #4f46e5; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px;">CodeAgent OS Platform</h2>
               <p>Hello Admin,</p>
-              <p>This is an automated test email confirming that your SMTP dispatch configuration is working correctly.</p>
+              <p>This is an automated test email confirming that your mail dispatch configuration is working correctly.</p>
               <div style="background-color: #f8f9ff; padding: 15px; border-left: 4px solid #3525cd; margin: 20px 0;">
                 <strong>Status:</strong> <span style="color: #059669;">Verified</span><br>
-                <strong>Host:</strong> {settings.smtp_host}<br>
-                <strong>Port:</strong> {settings.smtp_port}
+                <strong>Transport:</strong> {transport}
               </div>
               <p>If you received this message, no further action is required.</p>
               <br>
@@ -443,18 +418,15 @@ async def send_test_email(db: AsyncSession, to_email: str):
             </div>
           </body>
         </html>
-        """
-        part = MIMEText(html, "html")
-        msg.attach(part)
-        
-        if settings.smtp_port in ['465', 465]:
-            server = smtplib.SMTP_SSL(settings.smtp_host, int(settings.smtp_port))
-        else:
-            server = smtplib.SMTP(settings.smtp_host, int(settings.smtp_port))
-            server.starttls()
-        server.login(settings.smtp_user, settings.smtp_pass)
-        server.sendmail(msg["From"], to_email, msg.as_string())
-        server.quit()
-        return {"status": "success", "message": "Test email sent successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+    """
+
+    ok, detail = await send_email(
+        to_email,
+        "Platform Configuration - Test Email",
+        html,
+        platform_settings=settings,
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=detail)
+    return {"status": "success", "message": f"Test email sent successfully ({detail})"}
+

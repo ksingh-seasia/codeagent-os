@@ -149,7 +149,8 @@ class PlatformSettingsResponse(BaseModel):
         from_attributes = True
 
 class TestEmailRequest(BaseModel):
-    email: str
+    # Optional: the API falls back to the signed-in super admin's address.
+    email: str | None = None
 
 class PlatformUserResponse(BaseModel):
     id: int

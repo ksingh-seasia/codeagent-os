@@ -82,8 +82,12 @@ export const api = {
       const response = await apiClient.put("/super-admin/settings", data);
       return response.data;
     },
-    testEmail: async (email: string) => {
-      const response = await apiClient.post("/super-admin/settings/test-email", { email });
+    getEmailStatus: async () => {
+      const response = await apiClient.get("/super-admin/settings/email-status");
+      return response.data;
+    },
+    testEmail: async (email?: string) => {
+      const response = await apiClient.post("/super-admin/settings/test-email", { email: email ?? null });
       return response.data;
     },
   },
